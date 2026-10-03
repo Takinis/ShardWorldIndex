@@ -1,0 +1,81 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: ShardWorldIndex 1.0\n"
+"PO-Revision-Date: 2026-09-06 00:00+0900\n"
+"Last-Translator: Sydney\n"
+"Language-Team: Chinese\n"
+"Language: zh\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"POT Version: 2.0"
+
+#. STRINGS.UI.PORKLAND_ENTRANCE.TITLE
+msgctxt "STRINGS.UI.PORKLAND_ENTRANCE.TITLE"
+msgid "Travel to another world?"
+msgstr "要前往另一个世界吗？"
+
+#. STRINGS.UI.PORKLAND_ENTRANCE.BODY
+msgctxt "STRINGS.UI.PORKLAND_ENTRANCE.BODY"
+msgid "Where would you like to travel to?"
+msgstr "你想要去哪里呢？"
+
+#. STRINGS.UI.PORKLAND_ENTRANCE.FOREST
+msgctxt "STRINGS.UI.PORKLAND_ENTRANCE.FOREST"
+msgid "Survival"
+msgstr "生存"
+
+#. STRINGS.UI.PORKLAND_ENTRANCE.SHIPWRECKED
+msgctxt "STRINGS.UI.PORKLAND_ENTRANCE.SHIPWRECKED"
+msgid "Shipwrecked"
+msgstr "海难"
+
+#. STRINGS.UI.PORKLAND_ENTRANCE.PORKLAND
+msgctxt "STRINGS.UI.PORKLAND_ENTRANCE.PORKLAND"
+msgid "Hamlet"
+msgstr "猪镇"
+
+#. STRINGS.UI.PORKLAND_ENTRANCE.CANCEL
+msgctxt "STRINGS.UI.PORKLAND_ENTRANCE.CANCEL"
+msgid "Cancel"
+msgstr "取消"
+
+#. STRINGS.UI.PORKLAND_ENTRANCE.UNAVAILABLE
+msgctxt "STRINGS.UI.PORKLAND_ENTRANCE.UNAVAILABLE"
+msgid "World switching is unavailable."
+msgstr "当前无法切换世界。"
+
+#. STRINGS.UI.PORKLAND_ENTRANCE.MASTER_ONLY
+msgctxt "STRINGS.UI.PORKLAND_ENTRANCE.MASTER_ONLY"
+msgid "The Skyworthy can only be used in the Master world."
+msgstr "天空之椅只能在主世界使用。"
+
+#. STRINGS.UI.PORKLAND_ENTRANCE.MANAGED_EXTERNALLY
+msgctxt "STRINGS.UI.PORKLAND_ENTRANCE.MANAGED_EXTERNALLY"
+msgid "The current world transition is managed by another mod."
+msgstr "当前世界切换由其他模组管理。"
+
+#. STRINGS.UI.PORKLAND_ENTRANCE.ALREADY_THERE
+msgctxt "STRINGS.UI.PORKLAND_ENTRANCE.ALREADY_THERE"
+msgid "You are already in that world."
+msgstr "你已经在该世界中。"
+
+#. STRINGS.UI.PORKLAND_ENTRANCE.IN_PROGRESS
+msgctxt "STRINGS.UI.PORKLAND_ENTRANCE.IN_PROGRESS"
+msgid "A world switch is already in progress."
+msgstr "世界切换正在进行。"
+
+#. STRINGS.UI.PORKLAND_ENTRANCE.TRANSITION_FAILED
+msgctxt "STRINGS.UI.PORKLAND_ENTRANCE.TRANSITION_FAILED"
+msgid "Unable to switch worlds. Try again."
+msgstr "无法切换世界，请重试。"
+
+#. STRINGS.NAMES.PORKLAND_ENTRANCE
+msgctxt "STRINGS.NAMES.PORKLAND_ENTRANCE"
+msgid "Skyworthy"
+msgstr "天空之椅"
+
+#. STRINGS.RECIPE_DESC.PORKLAND_ENTRANCE
+msgctxt "STRINGS.RECIPE_DESC.PORKLAND_ENTRANCE"
+msgid "Hop on. What could possibly go wrong?"
+msgstr "来啊。这还可能出什么问题呢？"

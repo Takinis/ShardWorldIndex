@@ -1,0 +1,23 @@
+AddLevel(LEVELTYPE.SURVIVAL, {
+    id = "HAMLET_SECONDARY",
+    name = "HAMLET_SECONDARY",
+    desc = "HAMLET_SECONDARY",
+    location = "cave",
+    version = 4,
+    overrides = {
+        task_set = "HAMLET_SECONDARY",
+        start_location = "HamletSecondaryStart",
+        world_size = "small",
+        layout_mode = "LinkNodesByKeys",
+        roads = "never",
+        boons = "never",
+        has_ocean = false,
+        keep_disconnected_tiles = true,
+        no_wormholes_to_disconnected_tiles = true,
+        no_joining_islands = true,
+    },
+    required_setpieces = {},
+    numrandom_set_pieces = 0,
+    random_set_pieces = {},
+    required_prefabs = {},
+})
