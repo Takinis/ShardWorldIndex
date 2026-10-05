@@ -79,7 +79,7 @@ Without this field, the API uses a small DST cave as the secondary level.
 
 ### 4. Switch worlds
 
-Call the API from master-shard server code.
+Call the API from authoritative shard server code.
 
 ```lua
 GLOBAL.SwitchWorld("my_world", {
@@ -92,6 +92,10 @@ end)
 `SwitchWorld` starts a world index when none is active and advances the active
 world index otherwise. It also moves players out of secondary shards before the
 transition.
+
+`GLOBAL.SwitchWorld` and the `RequestWorld*` instance methods may also be called
+from an authoritative secondary shard. The request is forwarded to the master
+shard, which validates and coordinates the existing two-phase transition.
 
 Return to the stored parent world with:
 
@@ -151,6 +155,11 @@ Other mods can access the current instance through
 - `GetRegisteredWorlds()`
 - `BuildWorldSwitchOptions(id, opts)`
 - `SwitchWorld(id, opts, callback)`
+- `RequestWorldSwitch(id, opts, callback)`
+- `RequestWorldDestination(world_type, opts, callback)`
+- `RequestWorldReturn(reason, callback)`
+- `RequestForwardedTransition(operation, opts, callback)`
+- `RegisterForwardedTransitionHandler(operation, handler)`
 - `GetState(file_id)`
 - `StartWorldIndex(opts, callback)`
 - `AdvanceWorldIndex(opts, callback)`

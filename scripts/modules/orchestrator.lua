@@ -218,6 +218,7 @@ return function(Class)
             local_method = "QueueNextWorld",
             default_reason = "advance",
             state = state,
+            force_players = true,
         }, cb)
         return true
     end

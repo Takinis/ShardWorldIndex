@@ -173,7 +173,7 @@ function SwitchWorld(world_id, opts, cb)
         print("[Shard World Index] ShardWorldIndex is unavailable.")
         return false
     end
-    return worldindex:SwitchWorld(world_id, opts, cb)
+    return worldindex:RequestWorldSwitch(world_id, opts, cb)
 end
 
 require("modules/index_api")(ShardWorldIndex)
@@ -469,6 +469,7 @@ rollback_deferred_return = world_switch.RollbackDeferredReturn
 
 require("modules/secondary_transition")(ShardWorldIndex)
 require("modules/orchestrator")(ShardWorldIndex)
+require("modules/forwarding")(ShardWorldIndex)
 
 function ShardWorldIndex:HasActiveSidecar(slot, cb)
     cb = cb or noop

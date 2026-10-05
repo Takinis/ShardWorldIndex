@@ -4,6 +4,7 @@ local AddShardModRPCHandler = AddShardModRPCHandler
 GLOBAL.setfenv(1, GLOBAL)
 
 local secondary_operation = nil
+local forwarded_requests = {}
 
 local function is_master_shard_id(shardid)
     if shardid == nil then
@@ -121,6 +122,93 @@ end
 AddShardModRPCHandler(RPC_NAMESPACE, "ForcePlayersToMaster", function(shardid)
     if is_secondary_request_from_master(shardid) then
         ShardWorldIndex:ForceLocalPlayersToMaster()
+    end
+end)
+
+AddShardModRPCHandler(RPC_NAMESPACE, "ForwardWorldIndexTransition", function(shardid, data)
+    if not is_master_request_from_secondary(shardid) then
+        return
+    end
+
+    local worldindex = get_world_index()
+    if worldindex == nil then
+        return
+    end
+
+    local request = decode_shard_payload(data)
+    if type(request.request_id) ~= "string" or request.request_id == "" or
+        type(request.operation) ~= "string" or request.operation == "" or
+        type(request.opts) ~= "table" then
+        return
+    end
+    local existing = forwarded_requests[request.request_id]
+    if existing ~= nil then
+        if existing.completed then
+            local function send_cached_reply()
+                worldindex:SendShardRPC(RPC_NAMESPACE, "ForwardWorldIndexTransitionReply", shardid,
+                {
+                    request_id = request.request_id,
+                    success = existing.success == true,
+                })
+            end
+            if TheWorld ~= nil then
+                TheWorld:DoStaticTaskInTime(0, send_cached_reply)
+            else
+                send_cached_reply()
+            end
+        end
+        return
+    end
+    local request_state = {}
+    forwarded_requests[request.request_id] = request_state
+
+    local replied = false
+    local function reply_forwarded(success)
+        if replied then
+            return
+        end
+        replied = true
+        request_state.completed = true
+        request_state.success = success == true
+        local function send_reply()
+            worldindex:SendShardRPC(RPC_NAMESPACE, "ForwardWorldIndexTransitionReply", shardid,
+            {
+                request_id = request.request_id,
+                success = success == true,
+            })
+        end
+        if TheWorld ~= nil then
+            TheWorld:DoStaticTaskInTime(0, send_reply)
+            TheWorld:DoStaticTaskInTime(FORWARDED_TRANSITION_TIMEOUT, function()
+                if forwarded_requests[request.request_id] == request_state then
+                    forwarded_requests[request.request_id] = nil
+                end
+            end)
+        else
+            send_reply()
+            forwarded_requests[request.request_id] = nil
+        end
+    end
+
+    local function execute_forwarded()
+        if not worldindex:ExecuteForwardedTransition(request.operation, request.opts, reply_forwarded) then
+            reply_forwarded(false)
+        end
+    end
+    if TheWorld ~= nil then
+        TheWorld:DoTaskInTime(0, execute_forwarded)
+    else
+        execute_forwarded()
+    end
+end)
+
+AddShardModRPCHandler(RPC_NAMESPACE, "ForwardWorldIndexTransitionReply", function(shardid, data)
+    if not is_secondary_request_from_master(shardid) then
+        return
+    end
+    local worldindex = get_world_index()
+    if worldindex ~= nil then
+        worldindex:HandleForwardedTransitionReply(decode_shard_payload(data))
     end
 end)
 

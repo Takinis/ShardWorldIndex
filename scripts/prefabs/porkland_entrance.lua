@@ -90,25 +90,19 @@ local function StartTransitionPresentation(portal)
 	end
 end
 
-local function GetHomeWorldType(state)
-	local home = state ~= nil and (state.home or state.main) or nil
-	return type(home) == "table" and home.world_type or nil
-end
-
 local function BeginWorldSwitch(inst, target)
 	local worldindex = GetWorldIndex()
 	if worldindex == nil then
 		FinishFailedTransition(inst)
 		return
 	end
-	local state = worldindex ~= nil and worldindex:GetState() or nil
 	local opts = {
 		kind = "world_index",
 		reason = "porkland_entrance",
-		target = { type = "generated", world_type = target },
 		file_id = target,
 		reuse_existing = true,
-			force_players_to_master_modname = RPC_NAMESPACE,
+		return_if_home = true,
+		force_players_to_master_modname = RPC_NAMESPACE,
 		force_players_to_master_rpcname = "ForcePlayersToMaster",
 	}
 
@@ -118,22 +112,7 @@ local function BeginWorldSwitch(inst, target)
 		end
 	end
 
-	local started
-	if state ~= nil and state.active == true and target == GetHomeWorldType(state) then
-		worldindex:SendForcePlayersToMasterRPC(
-			opts.force_players_to_master_modname,
-			opts.force_players_to_master_rpcname
-		)
-		started = worldindex:ReturnFromWorldIndex("porkland_entrance", oncomplete)
-	elseif state ~= nil and state.active == true then
-		worldindex:SendForcePlayersToMasterRPC(
-			opts.force_players_to_master_modname,
-			opts.force_players_to_master_rpcname
-		)
-		started = worldindex:AdvanceWorldIndex(opts, oncomplete)
-	else
-		started = worldindex:StartWorldIndex(opts, oncomplete)
-	end
+	local started = worldindex:RequestWorldDestination(target, opts, oncomplete)
 
 	if started == false then
 		FinishFailedTransition(inst)
@@ -150,10 +129,6 @@ local function TravelToWorld(inst, doer, target)
 	local state = worldindex ~= nil and worldindex:GetState() or nil
 	if worldindex == nil then
 		Deny(doer, STRINGS.UI.PORKLAND_ENTRANCE.UNAVAILABLE)
-		return false
-	end
-	if not worldindex:IsMasterShard() then
-		Deny(doer, STRINGS.UI.PORKLAND_ENTRANCE.MASTER_ONLY)
 		return false
 	end
 	if state ~= nil and state.active == true and state.managed_externally == true then
@@ -186,11 +161,6 @@ local function OnActivate(inst, doer)
 	end
 	if worldindex == nil then
 		Deny(doer, STRINGS.UI.PORKLAND_ENTRANCE.UNAVAILABLE)
-		inst.components.activatable.inactive = true
-		return false
-	end
-	if not worldindex:IsMasterShard() then
-		Deny(doer, STRINGS.UI.PORKLAND_ENTRANCE.MASTER_ONLY)
 		inst.components.activatable.inactive = true
 		return false
 	end

@@ -1,7 +1,7 @@
 name = "ShardWorldIndex"
 description = "World switching API for shard-based DST mods."
 author = "Sydney"
-version = "1.1.2"
+version = "1.2.0"
 api_version = 10
 
 dst_compatible = true
