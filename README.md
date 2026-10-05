@@ -137,8 +137,8 @@ Different registered presets may use the same base `location`, such as
 Registry queries:
 
 ```lua
-local definition = GLOBAL.GetWorld("my_world")
-local definitions = GLOBAL.GetWorlds()
+local definition = GLOBAL.GetRegisteredWorld("my_world")
+local definitions = GLOBAL.GetRegisteredWorlds()
 ```
 
 ## Instance API

@@ -156,11 +156,11 @@ function RegisterWorld(id, definition)
     return register_world_definition(id, definition)
 end
 
-function GetWorld(id)
+function GetRegisteredWorld(id)
     return registry.Get(id)
 end
 
-function GetWorlds()
+function GetRegisteredWorlds()
     return registry.GetAll()
 end
 
