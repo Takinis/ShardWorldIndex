@@ -1,4 +1,4 @@
-local normalize_id = normalize_world_index_file_id
+local manifest = require("modules/manifest")
     local worlds = {}
     local aliases = {}
 
@@ -20,7 +20,7 @@ local normalize_id = normalize_world_index_file_id
         if type(id) ~= "string" or id == "" then
             return nil
         end
-        return normalize_id(id)
+        return manifest.NormalizeFileID(id)
     end
 
     local function copy_level_fields(definition)
@@ -114,8 +114,8 @@ local normalize_id = normalize_world_index_file_id
             }
         end
 
-        local file_id = normalize_id(definition.file_id or target.file_id or id)
-        local secondary_file_id = normalize_id(definition.secondary_file_id or file_id.."_secondary")
+        local file_id = manifest.NormalizeFileID(definition.file_id or target.file_id or id)
+        local secondary_file_id = manifest.NormalizeFileID(definition.secondary_file_id or file_id.."_secondary")
         local world =
         {
             id = id,
@@ -179,7 +179,6 @@ local normalize_id = normalize_world_index_file_id
     return
     {
         Register = register,
-        ResolveID = resolve_id,
         Get = get,
         GetAll = get_all,
     }

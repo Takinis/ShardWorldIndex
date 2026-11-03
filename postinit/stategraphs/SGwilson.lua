@@ -1,152 +1,180 @@
 local AddStategraphState = AddStategraphState
 GLOBAL.setfenv(1, GLOBAL)
 
-local function MakePorklandPortalPreState(server_states)
+local PORTAL_PRE_STATE = "player_porkland_portal_pre"
+local PORTAL_LOOP_STATE = "player_porkland_portal_loop"
+local PORTAL_BUILD = "player_portal_hamlet"
+local PORTAL_PRE_TIME = 3.5
+local CLIENT_TIMEOUT = 30
+
+local PORTAL_TAGS =
+{
+    "doing",
+    "busy",
+    "nopredict",
+    "nomorph",
+    "nodangle",
+    "noattack",
+    "nointerrupt",
+    "noelectrocute",
+}
+
+local function StopPlayer(inst)
+    inst.components.locomotor:Stop()
+    inst.components.locomotor:StopMoving()
+    inst.Physics:Stop()
+end
+
+local function SetInvincible(inst)
+    inst.sg.statemem.was_invincible = inst.components.health.invincible
+    inst.components.health:SetInvincible(true)
+end
+
+local function RestoreInvincibility(inst)
+    inst.components.health:SetInvincible(inst.sg.statemem.was_invincible)
+end
+
+local function RestorePortalPresentation(inst)
+    if inst.sg.statemem.portal_build then
+        inst.AnimState:ClearOverrideBuild(PORTAL_BUILD)
+    end
+    if inst.sg.statemem.no_facing then
+        inst.Transform:SetFourFaced()
+    end
+    if inst.sg.statemem.collision_mask ~= nil then
+        inst.Physics:SetCollisionMask(inst.sg.statemem.collision_mask)
+    end
+    inst.DynamicShadow:Enable(true)
+    if inst.sg.statemem.camera_changed then
+        inst:SetCameraDistance()
+    end
+    RestoreInvincibility(inst)
+end
+
+local function MakePorklandPortalPreState()
     return State{
-        name = "player_porkland_portal_pre",
-        tags = { "doing", "busy", "nopredict", "nomorph", "noattack", "nointerrupt" },
-        server_states = server_states,
+        name = PORTAL_PRE_STATE,
+        tags = PORTAL_TAGS,
 
         onenter = function(inst, target)
-            if server_states ~= nil then
-                if inst.components.locomotor ~= nil then
-                    inst.components.locomotor:Stop()
-                end
-                return
-            end
-
-            if inst.components.locomotor ~= nil then
-                inst.components.locomotor:Stop()
-                inst.components.locomotor:StopMoving()
-            end
+            StopPlayer(inst)
             inst:ClearBufferedAction()
+            inst:PushEvent("ms_closepopups")
 
+            if inst.components.playercontroller ~= nil then
+                inst.components.playercontroller:RemotePausePrediction()
+            end
             if inst.components.rider ~= nil and inst.components.rider:IsRiding() then
                 inst.components.rider:ActualDismount()
             end
 
-            inst.sg.statemem.heavy = inst.components.inventory ~= nil and
-                inst.components.inventory:IsHeavyLifting()
-            if inst.components.health ~= nil then
-                inst.sg.statemem.was_invincible = inst.components.health.invincible
-                inst.components.health:SetInvincible(true)
-            end
+            inst.sg.statemem.heavy = inst.components.inventory:IsHeavyLifting()
+            SetInvincible(inst)
+
             if target ~= nil and target:IsValid() and target:HasTag("porkland_portal") then
                 inst.sg.statemem.target = target
             end
 
             inst.AnimState:PlayAnimation(inst.sg.statemem.heavy and "heavy_idle" or "idle_loop", true)
-            inst.sg:SetTimeout(3.5)
+            inst.sg:SetTimeout(PORTAL_PRE_TIME)
         end,
 
-        timeline = server_states == nil and
+        timeline =
         {
             TimeEvent(30 * FRAMES, function(inst)
-                if inst.DynamicShadow ~= nil then
-                    inst.DynamicShadow:Enable(false)
-                end
+                inst.DynamicShadow:Enable(false)
+                inst.sg.statemem.camera_changed = true
+                inst:SetCameraDistance(14)
                 inst.AnimState:PlayAnimation(inst.sg.statemem.heavy and "heavy_jump" or "jump")
 
                 local fx = SpawnPrefab("wormhole_porkland_fx")
-                if fx ~= nil then
-                    fx.Transform:SetPosition(inst.Transform:GetWorldPosition())
-                end
+                fx.Transform:SetPosition(inst.Transform:GetWorldPosition())
             end),
-        } or nil,
+        },
 
-        ontimeout = server_states == nil and function(inst)
+        ontimeout = function(inst)
             inst.sg.statemem.continue_to_portal_loop = true
-            inst.sg:GoToState("player_porkland_portal_loop", {
+            inst.sg:GoToState(PORTAL_LOOP_STATE, {
+                camera_changed = inst.sg.statemem.camera_changed,
+                heavy = inst.sg.statemem.heavy,
                 was_invincible = inst.sg.statemem.was_invincible,
                 target = inst.sg.statemem.target,
             })
-        end or nil,
+        end,
 
-        onexit = server_states == nil and function(inst)
+        onexit = function(inst)
             if not inst.sg.statemem.continue_to_portal_loop then
-                if inst.DynamicShadow ~= nil then
-                    inst.DynamicShadow:Enable(true)
-                end
-                if inst.components.health ~= nil and inst.sg.statemem.was_invincible ~= nil then
-                    inst.components.health:SetInvincible(inst.sg.statemem.was_invincible)
-                end
+                RestorePortalPresentation(inst)
             end
-        end or nil,
+        end,
     }
 end
 
-local function MakePorklandPortalLoopState(server_states)
+local function MakePorklandPortalLoopState()
     return State{
-        name = "player_porkland_portal_loop",
-        tags = { "doing", "busy", "nopredict", "nomorph", "noattack", "nointerrupt" },
-        server_states = server_states,
+        name = PORTAL_LOOP_STATE,
+        tags = PORTAL_TAGS,
 
         onenter = function(inst, data)
-            if server_states ~= nil then
-                if inst.components.locomotor ~= nil then
-                    inst.components.locomotor:Stop()
-                end
-                return
-            end
+            StopPlayer(inst)
 
-            if inst.components.locomotor ~= nil then
-                inst.components.locomotor:Stop()
-                inst.components.locomotor:StopMoving()
-            end
-            inst.sg.statemem.was_invincible = data ~= nil and data.was_invincible or nil
-            if inst.components.health ~= nil then
-                inst.components.health:SetInvincible(true)
-            end
+            inst.sg.statemem.camera_changed = data.camera_changed == true
+            inst.sg.statemem.heavy = data.heavy == true
+            inst.sg.statemem.was_invincible = data.was_invincible
+            inst.components.health:SetInvincible(true)
 
+            inst.sg.statemem.collision_mask = inst.Physics:GetCollisionMask()
+            inst.Physics:SetCollisionMask(COLLISION.GROUND)
+
+            inst.sg.statemem.no_facing = true
             inst.Transform:SetNoFaced()
-            inst.AnimState:AddOverrideBuild("player_portal_hamlet")
+            inst.sg.statemem.portal_build = true
+            inst.AnimState:AddOverrideBuild(PORTAL_BUILD)
             inst.AnimState:PlayAnimation("hamlet_portal_pre")
             inst.AnimState:PushAnimation("hamlet_portal_loop", true)
 
-            local target = data ~= nil and data.target or nil
+            local target = data.target
             if target ~= nil and target:IsValid() and target:HasTag("porkland_portal") then
-                inst.sg.statemem.target = target
-                target:Hide()
-                ChangeToInventoryPhysics(target)
                 local x, y, z = target.Transform:GetWorldPosition()
                 inst.Physics:Teleport(x, y, z)
             end
         end,
 
-        onexit = server_states == nil and function(inst)
-            inst.AnimState:ClearOverrideBuild("player_portal_hamlet")
-            inst.Transform:SetFourFaced()
-            local target = inst.sg.statemem.target
-            if target ~= nil and target:IsValid() then
-                target:Show()
-                ChangeToObstaclePhysics(target, 1)
-            end
-            if inst.DynamicShadow ~= nil then
-                inst.DynamicShadow:Enable(true)
-            end
-            if inst.components.health ~= nil and inst.sg.statemem.was_invincible ~= nil then
-                inst.components.health:SetInvincible(inst.sg.statemem.was_invincible)
-            end
-        end or nil,
+        onexit = RestorePortalPresentation,
     }
 end
 
-local states =
-{
-    MakePorklandPortalPreState(),
-    MakePorklandPortalLoopState(),
-}
+local function MakePorklandPortalClientState(name)
+    return State{
+        name = name,
+        tags = { "doing", "busy" },
+        server_states = { PORTAL_PRE_STATE, PORTAL_LOOP_STATE },
 
-for _, state in ipairs(states) do
-    AddStategraphState("wilson", state)
+        onenter = function(inst)
+            inst.components.locomotor:Stop()
+            inst.components.locomotor:Clear()
+            inst:ClearBufferedAction()
+            inst.sg:SetTimeout(CLIENT_TIMEOUT)
+        end,
+
+        onupdate = function(inst)
+            if inst.sg.timeinstate > 2 * FRAMES and inst.sg:ServerStateMatches() and
+                inst.entity:FlattenMovementPrediction() then
+                inst.sg:GoToState("idle", "noanim")
+            end
+        end,
+
+        ontimeout = function(inst)
+            if inst.sg:ServerStateMatches() then
+                inst.sg:SetTimeout(CLIENT_TIMEOUT)
+            else
+                inst.sg:GoToState("idle", "cancel")
+            end
+        end,
+    }
 end
 
-local client_states =
-{
-    MakePorklandPortalPreState({ "player_porkland_portal_pre" }),
-    MakePorklandPortalLoopState({ "player_porkland_portal_loop" }),
-}
-
-for _, state in ipairs(client_states) do
-    AddStategraphState("wilson_client", state)
-end
+AddStategraphState("wilson", MakePorklandPortalPreState())
+AddStategraphState("wilson", MakePorklandPortalLoopState())
+AddStategraphState("wilson_client", MakePorklandPortalClientState(PORTAL_PRE_STATE))
+AddStategraphState("wilson_client", MakePorklandPortalClientState(PORTAL_LOOP_STATE))

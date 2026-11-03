@@ -4,6 +4,18 @@ local worldgenoverride_file = WORLDGENOVERRIDE_FILE
 local sidecar_schema_version = 2
     local write_queues = {}
 
+    local function is_valid_state(data)
+        return type(data) == "table" and
+            (data.schema_version == nil or type(data.schema_version) == "number" and
+                data.schema_version <= sidecar_schema_version) and
+            (data.home == nil or type(data.home) == "table") and
+            (data.main == nil or type(data.main) == "table")
+    end
+
+    local function get_slot_and_shard(index)
+        return index:GetSlot(), index:GetShard()
+    end
+
     local function get_write_key(index, filename)
         local slot, shard = get_slot_and_shard(index)
         return tostring(slot or "legacy")..":"..tostring(shard or "legacy")..":"..filename
@@ -78,21 +90,20 @@ local sidecar_schema_version = 2
     end
 
     local function get_sidecar_filename(index, file_id)
-        return index:GetShardIndexName().."_"..normalize_world_index_file_id(file_id)
+        return index:GetShardIndexName().."_"..manifest.NormalizeFileID(file_id)
     end
 
     local function read_named_sidecar(index, file_id, cb)
         cb = cb or noop
-        file_id = normalize_world_index_file_id(file_id)
+        file_id = manifest.NormalizeFileID(file_id)
         local filename = get_sidecar_filename(index, file_id)
         local slot, shard = get_slot_and_shard(index)
 
         local function onload(load_success, str)
             if load_success and str ~= nil and #str > 0 then
                 local success, data = RunInSandboxSafe(str)
-                if success and type(data) == "table" then
-                    data.file_id = normalize_world_index_file_id(data.file_id or file_id)
-                    ensure_world_index_home_aliases(data)
+                if success and is_valid_state(data) then
+                    data.file_id = manifest.NormalizeFileID(data.file_id or file_id)
                     cb(data, true, true)
                     return
                 end
@@ -112,8 +123,7 @@ local sidecar_schema_version = 2
 
     local function write_sidecar(index, data, cb, file_id)
         cb = cb or noop
-        file_id = normalize_world_index_file_id(file_id or (data ~= nil and data.file_id or nil))
-        ensure_world_index_home_aliases(data)
+        file_id = manifest.NormalizeFileID(file_id or (data ~= nil and data.file_id or nil))
         if data ~= nil then
             data.file_id = file_id
             data.schema_version = sidecar_schema_version
@@ -124,23 +134,29 @@ local sidecar_schema_version = 2
         local filename = get_sidecar_filename(index, file_id)
         local serialized = data ~= nil and DataDumper(data, nil, false) or nil
         enqueue_write(index, filename, serialized, function(value, onwrite)
-            local slot, shard = get_slot_and_shard(index)
-            if value == nil then
-                if slot ~= nil and shard ~= nil then
-                    TheSim:SetPersistentStringInClusterSlot(slot, shard, filename, "", false, onwrite)
-                elseif ErasePersistentString ~= nil then
-                    ErasePersistentString(filename, onwrite)
-                else
-                    TheSim:SetPersistentString(filename, "", false, onwrite)
+            manifest.Read(index, function(_, valid)
+                if valid == false then
+                    onwrite(false)
+                    return
                 end
-                return
-            end
+                local slot, shard = get_slot_and_shard(index)
+                if value == nil then
+                    if slot ~= nil and shard ~= nil then
+                        TheSim:SetPersistentStringInClusterSlot(slot, shard, filename, "", false, onwrite)
+                    elseif ErasePersistentString ~= nil then
+                        ErasePersistentString(filename, onwrite)
+                    else
+                        TheSim:SetPersistentString(filename, "", false, onwrite)
+                    end
+                    return
+                end
 
-            if slot ~= nil and shard ~= nil then
-                TheSim:SetPersistentStringInClusterSlot(slot, shard, filename, value, false, onwrite)
-            else
-                TheSim:SetPersistentString(filename, value, false, onwrite)
-            end
+                if slot ~= nil and shard ~= nil then
+                    TheSim:SetPersistentStringInClusterSlot(slot, shard, filename, value, false, onwrite)
+                else
+                    TheSim:SetPersistentString(filename, value, false, onwrite)
+                end
+            end)
         end, function(success)
             if not success then
                 cb(false)
@@ -157,6 +173,7 @@ local sidecar_schema_version = 2
     return
     {
         ReadWorldGenOverrideRaw = read_worldgenoverride_raw,
+        IsValidState = is_valid_state,
         WriteWorldGenOverride = write_worldgenoverride,
         RestoreWorldGenOverride = restore_worldgenoverride,
         ReadNamedSidecar = read_named_sidecar,

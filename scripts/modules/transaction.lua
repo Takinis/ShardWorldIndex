@@ -124,11 +124,6 @@ local function get_revision(state)
     return tonumber(current ~= nil and current.revision or state ~= nil and state.revision or nil) or 0
 end
 
-local function get_phase(state)
-    local current = state ~= nil and state.transaction or nil
-    return current ~= nil and normalize_phase(current.phase) or nil
-end
-
 local function is_newer(left, right)
     local left_epoch = get_epoch(left)
     local right_epoch = get_epoch(right)
@@ -152,11 +147,6 @@ local function is_newer(left, right)
         tostring(right ~= nil and right.file_id or "")
 end
 
-local function has_committed(state)
-    local phase = get_phase(state)
-    return phase == "committed" or phase == "finalize_pending" or phase == "finalized"
-end
-
 return
 {
     Begin = begin,
@@ -164,9 +154,5 @@ return
     Touch = touch,
     SetPhase = set_phase,
     GetEpoch = get_epoch,
-    GetRevision = get_revision,
-    GetUpdatedAt = get_updated_at,
-    GetPhase = get_phase,
     IsNewer = is_newer,
-    HasCommitted = has_committed,
 }

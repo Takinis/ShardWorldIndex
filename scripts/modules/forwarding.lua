@@ -1,6 +1,7 @@
 return function(Class)
     local registry = require("modules/registry")
     local shards = require("modules/shards")
+    local state_store = require("modules/state_store")
     local world = require("modules/world")
     local handlers = {}
     local request_serial = 0
@@ -58,7 +59,7 @@ return function(Class)
             return true
         end
 
-        local state = get_world_index_state(index)
+        local state = state_store.GetState(index)
         if state ~= nil and state.active == true and state.managed_externally == true then
             cb(false)
             return false

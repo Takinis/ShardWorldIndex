@@ -1,3 +1,4 @@
+local AddSimPostInit = AddSimPostInit
 GLOBAL.setfenv(1, GLOBAL)
 
 local storage = require("modules/storage")
@@ -5,16 +6,6 @@ local storage = require("modules/storage")
 ShardWorldIndex = Class(function(self, index)
     self.index = index
 end)
-
-secondary_transition_handlers = {}
-
-function register_secondary_transition_handler(operation, handler)
-    if type(operation) ~= "string" or operation == "" or type(handler) ~= "table" then
-        return false
-    end
-    secondary_transition_handlers[operation] = handler
-    return true
-end
 
 function noop()
 end
@@ -26,7 +17,7 @@ end
 function save_index(index, cb)
     cb = cb or noop
     index:Save(function(success)
-        if success ~= true and index.MarkDirty ~= nil then
+        if success ~= true then
             index:MarkDirty()
         end
         cb(success == true)
@@ -46,29 +37,13 @@ function resolve_index_args(self, index, ...)
     return index, ...
 end
 
-function get_slot_and_shard(index)
-    return index:GetSlot(), index:GetShard()
-end
-
 function is_master_shard_id(shardid)
     return shardid == nil or shardid == "" or shardid == SHARDID.MASTER or shardid == "Master"
 end
 
-function read_worldgenoverride_raw(index, cb)
-    return storage.ReadWorldGenOverrideRaw(index, cb)
-end
-
-function write_worldgenoverride_str(index, str, cb)
-    return storage.WriteWorldGenOverride(index, str, cb)
-end
-
-function restore_worldgenoverride(index, raw, cb)
-    return storage.RestoreWorldGenOverride(index, raw, cb)
-end
-
 function get_return_position()
     local player = ThePlayer or (AllPlayers ~= nil and AllPlayers[1]) or nil
-    if player ~= nil and player.Transform ~= nil then
+    if player ~= nil then
         local x, y, z = player.Transform:GetWorldPosition()
         return { x = x, y = y, z = z }
     end
@@ -89,29 +64,13 @@ end
 
 local state_store = require("modules/state_store")
 
-normalize_world_index_file_id = state_store.NormalizeFileID
-register_world_index_file_id = state_store.RegisterFileID
-get_world_index_file_id_for_shard = state_store.GetFileIDForShard
-is_known_world_index_file_id = state_store.IsKnownFileID
-get_known_world_index_file_ids = state_store.GetKnownFileIDs
-get_world_index_home_state = state_store.GetHomeState
-set_player_positions_for_session = state_store.SetPlayerPositionsForSession
-ensure_world_index_home_aliases = state_store.EnsureHomeAliases
-world_index_state_reserves_slot = state_store.ReservesSlot
-world_index_state_matches_current_session = state_store.MatchesCurrentSession
-is_pending_world_generation_state = state_store.IsPendingGeneration
-read_named_world_index_sidecar = state_store.ReadNamedSidecar
-read_world_index_sidecar = state_store.ReadSidecar
-write_world_index_sidecar = state_store.WriteSidecar
-set_world_index_state = state_store.SetState
-get_world_index_state = state_store.GetState
-
-resolve_save_record_position = ToolUtil.GetUpvalue(SpawnSaveRecord, "ResolveSaveRecordPosition")
 local players = require("modules/players")
-players.InstallSnapshotHooks()
+players.InstallSnapshotHooks(ToolUtil.GetUpvalue(SpawnSaveRecord, "ResolveSaveRecordPosition"))
 
+local shards = require("modules/shards")
 local world = require("modules/world")
 local registry = require("modules/registry")
+local secondary_transition = require("modules/secondary_transition")
 
 function register_world_definition(id, definition)
     local registered_world, reason = registry.Register(id, definition)
@@ -120,7 +79,7 @@ function register_world_definition(id, definition)
         return false, reason
     end
 
-    register_world_index_file_id(registered_world.file_id, registered_world.secondary_file_id)
+    state_store.RegisterFileID(registered_world.file_id, registered_world.secondary_file_id)
     if registered_world.world_type ~= nil then
         world.RegisterWorldType(
             registered_world.world_type,
@@ -176,10 +135,106 @@ function SwitchWorld(world_id, opts, cb)
     return worldindex:RequestWorldSwitch(world_id, opts, cb)
 end
 
-require("modules/index_api")(ShardWorldIndex)
+function ShardWorldIndex:IsMasterShard()
+    return shards.IsMasterShard()
+end
 
-clear_world_index_sidecar = state_store.ClearSidecar
-clear_all_world_index_sidecars = state_store.ClearAllSidecars
+function ShardWorldIndex:GetRuntimeWorldType()
+    return world.GetRuntimeWorldType()
+end
+
+function ShardWorldIndex:CollectPlayerSessions()
+    return players.CollectPlayerSessions()
+end
+
+function ShardWorldIndex:GetCharacterOnlySessions(sessions)
+    return players.GetCharacterOnlySessions(sessions)
+end
+
+function ShardWorldIndex:SessionsToUseridMap(sessions)
+    return players.SessionsToUseridMap(sessions)
+end
+
+function ShardWorldIndex:SessionListToMap(sessions)
+    return players.SessionListToMap(sessions)
+end
+
+function ShardWorldIndex:MergeSessionLists(primary, fallback)
+    return players.MergeSessionLists(primary, fallback)
+end
+
+function ShardWorldIndex:GetPlayerSaveSession(player)
+    return players.GetPlayerSaveSession(player)
+end
+
+function ShardWorldIndex:ForceLocalPlayersToMaster()
+    return shards.ForceLocalPlayersToMaster()
+end
+
+function ShardWorldIndex:SendShardRPC(modname, name, shardid, data)
+    return shards.SendShardRPC(modname, name, shardid, data)
+end
+
+function ShardWorldIndex:SendRPCToMasterShard(modname, name, data)
+    return shards.SendRPCToMasterShard(modname, name, data)
+end
+
+function ShardWorldIndex:HandleSecondaryWorldIndexReply(shardid, data)
+    return shards.HandleSecondaryWorldIndexReply(shardid, data)
+end
+
+function ShardWorldIndex:GetSecondaryShardPlayerCount()
+    return shards.GetSecondaryShardPlayerCount()
+end
+
+function ShardWorldIndex:GetLevelForShard(level, shardid)
+    return world.GetLevelForShard(level, shardid)
+end
+
+function ShardWorldIndex:GetIndexShard(index)
+    index = resolve_index_args(self, index)
+    return shards.GetIndexShard(index)
+end
+
+function ShardWorldIndex:InjectPlayerSessionsIntoExistingWorld(index, ...)
+    return players.InjectPlayerSessionsIntoExistingWorld(resolve_index_args(self, index, ...))
+end
+
+function ShardWorldIndex:RestartCurrentSlotAfterShardRPC(index, ...)
+    return shards.RestartCurrentSlotAfterShardRPC(resolve_index_args(self, index, ...))
+end
+
+function ShardWorldIndex:RegisterSecondaryTransitionHandler(operation, handler)
+    return secondary_transition.Register(operation, handler)
+end
+
+function ShardWorldIndex:IsSecondaryWorldIndexRequestPending()
+    return shards.IsSecondaryWorldIndexRequestPending()
+end
+
+function ShardWorldIndex:RegisterWorldIndexFileID(file_id, secondary_file_id)
+    return state_store.RegisterFileID(file_id, secondary_file_id)
+end
+
+function ShardWorldIndex:DeleteSessionIfNotHome(session_id, home_session_id)
+    return world.DeleteSessionIfNotHome(session_id, home_session_id)
+end
+
+function ShardWorldIndex:RegisterWorld(id, definition)
+    return register_world_definition(id, definition)
+end
+
+function ShardWorldIndex:GetRegisteredWorld(id)
+    return registry.Get(id)
+end
+
+function ShardWorldIndex:GetRegisteredWorlds()
+    return registry.GetAll()
+end
+
+function ShardWorldIndex:BuildWorldSwitchOptions(id, opts)
+    return build_registered_world_switch_options(id, opts)
+end
 
 function is_world_index_transition_restart()
     return Settings ~= nil and
@@ -192,11 +247,9 @@ function is_load_slot()
 end
 
 function should_preserve_pending_world_generation(index, state)
-    return is_pending_world_generation_state(state) or
-        (is_world_index_transition_restart() and not world_index_state_matches_current_session(index, state))
+    return state_store.IsPendingGeneration(state) or
+        (is_world_index_transition_restart() and not state_store.MatchesCurrentSession(index, state))
 end
-
-get_world_index_delete_state = state_store.GetDeleteState
 
 function prepare_interrupted_world_index_regen(index)
     index.world = { options = {} }
@@ -208,12 +261,12 @@ end
 
 function clear_interrupted_world_index_transition(index, cb)
     cb = cb or noop
-    clear_world_index_sidecar(index, function(sidecar_cleared)
+    state_store.ClearSidecar(index, function(sidecar_cleared)
         if not sidecar_cleared then
             cb(false)
             return
         end
-        restore_worldgenoverride(index, nil, cb)
+        storage.RestoreWorldGenOverride(index, nil, cb)
     end)
 end
 
@@ -221,12 +274,7 @@ function world_index_state_has_origin(state)
     return state ~= nil and (state.slot ~= nil or state.shard ~= nil)
 end
 
-local shards = require("modules/shards")
-
 function world_index_state_matches_index(index, state)
-    if state == nil then
-        return false
-    end
     if state.slot ~= nil and state.slot ~= index:GetSlot() then
         return false
     end
@@ -251,9 +299,8 @@ function build_world_index_home_state(index, worldgenoverride, opts)
 end
 
 function build_generation_recovery_state(index, state, source_session_id)
-    source_session_id = source_session_id or (index ~= nil and index:GetSession() or nil)
-    if state == nil or
-        source_session_id == nil or
+    source_session_id = source_session_id or index:GetSession()
+    if source_session_id == nil or
         source_session_id == "" or
         state.current_session_id ~= source_session_id then
         return nil
@@ -269,7 +316,7 @@ function build_generation_recovery_state(index, state, source_session_id)
 end
 
 function is_generation_source_session(state, session_id)
-    if state == nil or session_id == nil or session_id == "" then
+    if session_id == nil or session_id == "" then
         return false
     end
 
@@ -286,9 +333,9 @@ local index_state = require("modules/index_state")
 function finish_interrupted_return_to_stored_world(index, state, cb)
     cb = cb or noop
 
-    local home = get_world_index_home_state(state)
+    local home = state_store.GetHomeState(state)
     if home == nil or home.session_id == nil or home.session_id == "" then
-        clear_world_index_sidecar(index, cb)
+        state_store.ClearSidecar(index, cb)
         return
     end
 
@@ -317,7 +364,7 @@ end
 
 function suspend_current_world_index(index, state, reason, cb)
     cb = cb or noop
-    state = ensure_world_index_home_aliases(state)
+    state = state_store.EnsureHomeAliases(state)
 
     if state == nil or state.active ~= true then
         cb(nil, true)
@@ -339,12 +386,12 @@ function suspend_current_world_index(index, state, reason, cb)
     suspended_state.suspended_at = os.time()
     suspended_state.updated_at = os.time()
 
-    write_world_index_sidecar(index, suspended_state, function(success)
+    state_store.WriteSidecar(index, suspended_state, function(success)
         if not success then
             cb(nil, false)
             return
         end
-        set_world_index_state(index, suspended_state)
+        state_store.SetState(index, suspended_state)
         cb(parent_state, true)
     end, suspended_state.file_id)
 end
@@ -356,7 +403,7 @@ function restore_parent_world_index(index, state, cb)
     if type(parent_state) ~= "table" then
         if type(state) == "table" and state.return_pending ~= nil then
             state.return_pending = nil
-            write_world_index_sidecar(index, state, function(saved)
+            state_store.WriteSidecar(index, state, function(saved)
                 cb(saved == true)
             end, state.file_id)
             return
@@ -365,7 +412,7 @@ function restore_parent_world_index(index, state, cb)
         return
     end
 
-    parent_state = ensure_world_index_home_aliases(deepcopy_safe(parent_state))
+    parent_state = state_store.EnsureHomeAliases(deepcopy_safe(parent_state))
     parent_state.active = true
     parent_state.updated_at = os.time()
     parent_state.suspend_reason = nil
@@ -381,16 +428,16 @@ function restore_parent_world_index(index, state, cb)
     parent_state.pending_player_sessions = deepcopy_safe(state.pending_player_sessions)
     parent_state.pending_player_session_id = state.pending_player_session_id
 
-    write_world_index_sidecar(index, parent_state, function(parent_saved)
+    state_store.WriteSidecar(index, parent_state, function(parent_saved)
         if not parent_saved then
             cb(false)
             return
         end
-        set_world_index_state(index, parent_state, parent_state.file_id)
+        state_store.SetState(index, parent_state, parent_state.file_id)
 
         state.return_pending = nil
         state.parent_world_index_state = nil
-        write_world_index_sidecar(index, state, function(child_saved)
+        state_store.WriteSidecar(index, state, function(child_saved)
             cb(child_saved == true)
         end, state.file_id)
     end, parent_state.file_id)
@@ -398,7 +445,7 @@ end
 
 function resume_suspended_world_index(index, parent_state, cb)
     cb = cb or noop
-    parent_state = ensure_world_index_home_aliases(deepcopy_safe(parent_state))
+    parent_state = state_store.EnsureHomeAliases(deepcopy_safe(parent_state))
     if parent_state == nil or not world.SwitchIndexToCurrentWorld(index, parent_state) then
         cb(false)
         return
@@ -408,7 +455,7 @@ function resume_suspended_world_index(index, parent_state, cb)
     parent_state.suspend_reason = nil
     parent_state.suspended_at = nil
     parent_state.updated_at = os.time()
-    local home = get_world_index_home_state(parent_state)
+    local home = state_store.GetHomeState(parent_state)
     local worldgenoverride = parent_state.current_worldgenoverride or (home ~= nil and home.worldgenoverride or nil)
     index_state.Persist(index, parent_state,
     {
@@ -436,8 +483,8 @@ function recover_interrupted_generation_source(index, state, cb)
     recovery.generation_recovery_state = nil
     recovery.updated_at = os.time()
 
-    local worldgenoverride = recovery.current_worldgenoverride or
-        (get_world_index_home_state(recovery) ~= nil and get_world_index_home_state(recovery).worldgenoverride or nil)
+    local home = state_store.GetHomeState(recovery)
+    local worldgenoverride = recovery.current_worldgenoverride or (home ~= nil and home.worldgenoverride or nil)
     index_state.Persist(index, recovery,
     {
         restore_worldgenoverride = true,
@@ -445,46 +492,27 @@ function recover_interrupted_generation_source(index, state, cb)
     }, cb)
 end
 
-local target_commit = require("modules/target_commit")
+require("modules/lifecycle")(ShardWorldIndex)
+require("modules/world_switch").Install(ShardWorldIndex)
 
-reject_current_world_target = target_commit.RejectCurrentTarget
-reject_unavailable_world_target = target_commit.RejectUnavailableTarget
-should_regenerate_current_world_index_session = target_commit.ShouldRegenerateCurrentSession
-prepare_current_world_index_regen = target_commit.PrepareCurrentRegen
-has_pending_player_sessions = target_commit.HasPendingPlayerSessions
-needs_world_generation_postprocess = target_commit.NeedsGenerationPostprocess
-is_world_generation_saved_without_sidecar = target_commit.IsGenerationSavedWithoutSidecar
-finish_generated_world_index = target_commit.FinishGenerated
-write_world_index_topology_state = target_commit.WriteTopologyState
-commit_world_index_target = target_commit.CommitTarget
-should_cleanup_world_index_session = target_commit.ShouldCleanupSession
-
-local lifecycle = require("modules/lifecycle")(ShardWorldIndex)
-read_active_world_index_sidecar = lifecycle.ReadActiveSidecar
-
-local world_switch = require("modules/world_switch")(ShardWorldIndex)
-finalize_world_index_state = world_switch.FinalizeState
-finalize_deferred_return = world_switch.FinalizeDeferredReturn
-rollback_deferred_return = world_switch.RollbackDeferredReturn
-
-require("modules/secondary_transition")(ShardWorldIndex)
+secondary_transition.Install(ShardWorldIndex)
 require("modules/orchestrator")(ShardWorldIndex)
 require("modules/forwarding")(ShardWorldIndex)
 
 function ShardWorldIndex:HasActiveSidecar(slot, cb)
     cb = cb or noop
-    read_active_world_index_sidecar(slot, function(state, success)
+    state_store.ReadActiveSidecar(slot, function(state, success)
         cb(state ~= nil or success == false)
     end)
 end
 
 function ShardWorldIndex:ReadActiveSidecar(slot, cb)
-    read_active_world_index_sidecar(slot, cb)
+    state_store.ReadActiveSidecar(slot, cb)
 end
 
 function ShardWorldIndex:SwitchIndexToStoredWorld(index, state)
     index, state = resolve_index_args(self, index, state)
-    local home = get_world_index_home_state(state)
+    local home = state_store.GetHomeState(state)
     if home ~= nil then
         world.SwitchIndexToExistingWorld(index, home)
         return true
@@ -501,8 +529,18 @@ if type(_Shard_OnShardConnected) == "function" then
         end
         TheWorld:DoStaticTaskInTime(0, function()
             if ShardGameIndex ~= nil and ShardGameIndex.worldindex ~= nil then
-                ShardGameIndex.worldindex:RetryPendingSecondaryFinalize()
+                shards.RetryPendingSecondaryFinalize(ShardGameIndex)
             end
         end)
     end
 end
+
+AddSimPostInit(function()
+    if TheWorld ~= nil and TheWorld.ismastersim and shards.IsMasterShard() then
+        TheWorld:DoStaticTaskInTime(0, function()
+            if ShardGameIndex ~= nil then
+                shards.RetryPendingSecondaryFinalize(ShardGameIndex)
+            end
+        end)
+    end
+end)

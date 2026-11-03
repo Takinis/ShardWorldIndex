@@ -1,11 +1,24 @@
-return function(Class)
+local handlers = {}
+local M = {}
+
+function M.Register(operation, handler)
+    if type(operation) ~= "string" or operation == "" or type(handler) ~= "table" then
+        return false
+    end
+    handlers[operation] = handler
+    return true
+end
+
+function M.Install(Class)
     local index_state = require("modules/index_state")
+    local manifest = require("modules/manifest")
     local shards = require("modules/shards")
     local state_store = require("modules/state_store")
+    local storage = require("modules/storage")
     local transaction_api = require("modules/transaction")
     local transition = require("modules/transition")
     local world = require("modules/world")
-    local handlers = secondary_transition_handlers
+    local world_switch = require("modules/world_switch")
     local restore
     local finalize
 
@@ -31,7 +44,7 @@ return function(Class)
             file_id = active_state ~= nil and active_state.file_id or opts.file_id
         end
 
-        return target, normalize_world_index_file_id(file_id)
+        return target, manifest.NormalizeFileID(file_id)
     end
 
     local function validate(index, operation, opts, active_state, target)
@@ -77,9 +90,43 @@ return function(Class)
     local function find(index, request_id, file_id, cb)
         state_store.FindSidecar(index, file_id, function(state)
             local transaction = state.secondary_transition
-            return type(transaction) == "table" and
-                transaction.request_id == request_id and transaction or nil
+            if type(transaction) == "table" and transaction.request_id == request_id then
+                return transaction
+            end
+            local completed = state.secondary_completed_request
+            return type(completed) == "table" and completed.request_id == request_id and completed or nil
         end, cb)
+    end
+
+    local function write_prepared_marker(index, transaction, cb)
+        local handler = handlers[transaction.operation]
+        local opts = transaction.opts or {}
+        local marker = deepcopy_safe(transaction.original_target_state) or
+        {
+            active = false,
+            kind = opts.kind or (handler ~= nil and handler.kind or "world_index"),
+            file_id = transaction.file_id,
+            secondary = true,
+            slot = index:GetSlot(),
+            shard = shards.GetIndexShard(index),
+        }
+        transaction.status = "prepared"
+        transaction_api.Begin(marker,
+        {
+            id = transaction.request_id,
+            epoch = transaction.epoch,
+            operation = transaction.operation,
+            phase = "prepared",
+            file_id = transaction.file_id,
+        })
+        marker.secondary_transition = transaction
+        marker.updated_at = os.time()
+        state_store.WriteSidecar(index, marker, function(saved)
+            if saved then
+                state_store.SetState(index, marker, transaction.file_id)
+            end
+            cb(saved == true)
+        end, transaction.file_id)
     end
 
     local function prepare(index, operation, opts, cb)
@@ -91,19 +138,17 @@ return function(Class)
             return
         end
 
-        local active_state = get_world_index_state(index)
+        local active_state = state_store.GetState(index)
         local target, file_id = get_target(index, operation, opts, active_state)
-        local valid, reason = validate(index, operation, opts, active_state, target)
-        if not valid then
-            print("[Shard World Index] Cannot prepare "..tostring(operation)..": "..tostring(reason)..".")
-            cb(false)
-            return
-        end
-
         state_store.ReadNamedSidecar(index, file_id, function(target_state, _, valid)
             if valid == false then
                 print("[Shard World Index] Cannot prepare a transition with a corrupt sidecar.")
                 cb(false)
+                return
+            end
+            local completed = target_state ~= nil and target_state.secondary_completed_request or nil
+            if completed ~= nil and completed.request_id == request_id and completed.operation == operation then
+                cb(true, file_id)
                 return
             end
             local existing = target_state ~= nil and target_state.secondary_transition or nil
@@ -128,83 +173,68 @@ return function(Class)
                 return
             end
 
-            read_worldgenoverride_raw(index, function(worldgenoverride)
-                local secondary_transaction =
-                {
-                    request_id = request_id,
-                    operation = operation,
-                    status = "prepared",
-                    epoch = transaction_api.GetEpoch(active_state) + 1,
-                    file_id = file_id,
-                    opts = opts,
-                    original_state = deepcopy_safe(active_state),
-                    original_state_file_id = active_state ~= nil and active_state.file_id or nil,
-                    original_target_state = deepcopy_safe(target_state),
-                    original_index = index_state.Capture(index),
-                    original_worldgenoverride = worldgenoverride,
-                    prepared_at = os.time(),
-                }
-                local handler = handlers[operation]
-                local marker = deepcopy_safe(target_state) or
-                {
-                    active = false,
-                    kind = opts.kind or (handler ~= nil and handler.kind or "world_index"),
-                    file_id = file_id,
-                    secondary = true,
-                    slot = index:GetSlot(),
-                    shard = shards.GetIndexShard(index),
-                }
-                transaction_api.Begin(marker,
-                {
-                    id = request_id,
-                    epoch = secondary_transaction.epoch,
-                    operation = operation,
-                    phase = "prepared",
-                    file_id = file_id,
-                })
-                marker.secondary_transition = secondary_transaction
-                marker.updated_at = os.time()
-                write_world_index_sidecar(index, marker, function(saved)
-                    if saved then
-                        set_world_index_state(index, marker, file_id)
-                    end
-                    cb(saved == true, file_id)
-                end, file_id)
+            local valid, reason = validate(index, operation, opts, active_state, target)
+            if not valid then
+                print("[Shard World Index] Cannot prepare "..tostring(operation)..": "..tostring(reason)..".")
+                cb(false)
+                return
+            end
+            -- Save the source world before changing any index or override.
+            index:SaveCurrent(function(saved)
+                if saved == false then
+                    cb(false)
+                    return
+                end
+                storage.ReadWorldGenOverrideRaw(index, function(worldgenoverride)
+                    local secondary_transaction =
+                    {
+                        request_id = request_id,
+                        operation = operation,
+                        status = "prepared",
+                        epoch = transaction_api.GetEpoch(active_state) + 1,
+                        file_id = file_id,
+                        opts = opts,
+                        original_state = deepcopy_safe(active_state),
+                        original_state_file_id = active_state ~= nil and active_state.file_id or nil,
+                        original_target_state = deepcopy_safe(target_state),
+                        original_index = index_state.Capture(index),
+                        original_worldgenoverride = worldgenoverride,
+                        prepared_at = os.time(),
+                    }
+                    write_prepared_marker(index, secondary_transaction, function(saved)
+                        cb(saved, file_id)
+                    end)
+                end)
             end)
         end)
     end
 
     restore = function(index, transaction, cb)
         cb = cb or noop
-        if transaction == nil then
-            cb(true)
-            return
-        end
-
         index_state.Apply(index, transaction.original_index)
         local function restore_sidecars()
-            write_world_index_sidecar(index, transaction.original_target_state, function(target_restored)
+            state_store.WriteSidecar(index, transaction.original_target_state, function(target_restored)
                 if not target_restored then
                     cb(false)
                     return
                 end
-                set_world_index_state(index, transaction.original_target_state, transaction.file_id)
+                state_store.SetState(index, transaction.original_target_state, transaction.file_id)
 
                 local original_file_id = transaction.original_state_file_id
-                if original_file_id == nil or normalize_world_index_file_id(original_file_id) == transaction.file_id then
+                if original_file_id == nil or manifest.NormalizeFileID(original_file_id) == transaction.file_id then
                     cb(true)
                     return
                 end
-                write_world_index_sidecar(index, transaction.original_state, function(state_restored)
+                state_store.WriteSidecar(index, transaction.original_state, function(state_restored)
                     if state_restored then
-                        set_world_index_state(index, transaction.original_state, original_file_id)
+                        state_store.SetState(index, transaction.original_state, original_file_id)
                     end
                     cb(state_restored == true)
                 end, original_file_id)
             end, transaction.file_id)
         end
 
-        restore_worldgenoverride(index, transaction.original_worldgenoverride, function(restored)
+        storage.RestoreWorldGenOverride(index, transaction.original_worldgenoverride, function(restored)
             if not restored then
                 cb(false)
                 return
@@ -239,54 +269,87 @@ return function(Class)
         end
     end
 
-    local function commit(index, request_id, file_id, cb)
-        cb = cb or noop
-        find(index, request_id, file_id, function(marker, transaction)
-            if transaction == nil then
+    -- The master persists its commit decision before sending Commit and retries until
+    -- every shard acknowledges, so a failed commit must stay retryable: undo the partial
+    -- dispatch, then put the prepared transaction back instead of discarding it.
+    local function reset_to_prepared(index, transaction, cb)
+        restore(index, transaction, function(restored)
+            if not restored then
                 cb(false)
                 return
             end
-            if transaction.status == "committed" then
+            write_prepared_marker(index, transaction, cb)
+        end)
+    end
+
+    local commit
+
+    local function fail_commit(index, transaction, cb)
+        reset_to_prepared(index, transaction, function(reset)
+            if not reset then
+                print("[Shard World Index] Failed to reset commit "..tostring(transaction.request_id)..
+                    "; the next retry will restore it first.")
+            end
+            cb(false)
+        end)
+    end
+
+    commit = function(index, request_id, file_id, cb)
+        cb = cb or noop
+        find(index, request_id, file_id, function(marker, transaction, valid)
+            if valid == false or transaction == nil then
+                cb(false)
+                return
+            end
+            if transaction.status == "committed" or transaction.status == "finalized" then
                 cb(true, transaction.file_id)
+                return
+            end
+            if transaction.status == "committing" then
+                -- An earlier attempt was interrupted after it started changing the index.
+                reset_to_prepared(index, transaction, function(reset)
+                    if reset then
+                        commit(index, request_id, file_id, cb)
+                    else
+                        cb(false)
+                    end
+                end)
                 return
             end
 
             transaction.status = "committing"
             marker.secondary_transition = transaction
             transaction_api.SetPhase(marker, "committing")
-            write_world_index_sidecar(index, marker, function(marked)
+            state_store.WriteSidecar(index, marker, function(marked)
                 if not marked then
+                    transaction.status = "prepared"
                     cb(false)
                     return
                 end
+                state_store.SetState(index, marker, transaction.file_id)
                 dispatch(index, transaction.operation, deepcopy_safe(transaction.opts) or {}, transaction,
                     function(success)
                         if not success then
-                            restore(index, transaction, function()
-                                cb(false)
-                            end)
+                            fail_commit(index, transaction, cb)
                             return
                         end
 
-                        local result_state = get_world_index_state(index, transaction.file_id)
+                        local result_state = state_store.GetState(index, transaction.file_id)
                         if result_state == nil then
-                            restore(index, transaction, function()
-                                cb(false)
-                            end)
+                            fail_commit(index, transaction, cb)
                             return
                         end
                         transaction.status = "committed"
                         transaction.committed_at = os.time()
                         result_state.secondary_transition = transaction
                         transaction_api.SetPhase(result_state, "committed")
-                        write_world_index_sidecar(index, result_state, function(saved)
+                        state_store.WriteSidecar(index, result_state, function(saved)
                             if not saved then
-                                restore(index, transaction, function()
-                                    cb(false)
-                                end)
+                                transaction.status = "committing"
+                                fail_commit(index, transaction, cb)
                                 return
                             end
-                            set_world_index_state(index, result_state, transaction.file_id)
+                            state_store.SetState(index, result_state, transaction.file_id)
                             cb(true, transaction.file_id)
                         end, transaction.file_id)
                     end)
@@ -296,8 +359,10 @@ return function(Class)
 
     local function abort(index, request_id, file_id, cb)
         cb = cb or noop
-        find(index, request_id, file_id, function(_, transaction)
-            if transaction == nil then
+        find(index, request_id, file_id, function(_, transaction, valid)
+            if valid == false then
+                cb(false)
+            elseif transaction == nil or transaction.status == "finalized" then
                 cb(true)
             else
                 restore(index, transaction, cb)
@@ -307,9 +372,20 @@ return function(Class)
 
     finalize = function(index, request_id, file_id, cb)
         cb = cb or noop
-        find(index, request_id, file_id, function(state, transaction)
+        find(index, request_id, file_id, function(state, transaction, valid)
+            if valid == false then
+                cb(false, false)
+                return
+            end
             if transaction == nil then
                 cb(true, false)
+                return
+            end
+            if transaction.status == "finalized" then
+                local runtime_session = TheWorld ~= nil and TheWorld.meta ~= nil and
+                    TheWorld.meta.session_identifier or nil
+                cb(true, state_store.IsPendingGeneration(state) or
+                    (runtime_session ~= nil and runtime_session ~= index:GetSession()))
                 return
             end
             if transaction.status ~= "committed" then
@@ -319,10 +395,22 @@ return function(Class)
 
             local cleanup_session_id = state.deferred_cleanup_session_id
             local function finish()
-                finalize_world_index_state(index, state,
+                local previous_completed = state.secondary_completed_request
+                state.secondary_completed_request =
+                {
+                    request_id = request_id,
+                    operation = transaction.operation,
+                    file_id = transaction.file_id,
+                    status = "finalized",
+                    finalized_at = os.time(),
+                }
+                world_switch.FinalizeState(index, state,
                     { "deferred_return", "deferred_cleanup_session_id", "secondary_transition" },
                     cleanup_session_id,
                     function(saved)
+                        if not saved then
+                            state.secondary_completed_request = previous_completed
+                        end
                         cb(saved, true)
                     end,
                     transaction.file_id)
@@ -362,3 +450,5 @@ return function(Class)
         finalize(index, request_id, file_id, cb)
     end
 end
+
+return M

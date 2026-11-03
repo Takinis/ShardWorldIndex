@@ -1,8 +1,11 @@
 return function(Class)
     local players = require("modules/players")
     local shards = require("modules/shards")
+    local state_store = require("modules/state_store")
+    local target_commit = require("modules/target_commit")
     local transition = require("modules/transition")
     local world = require("modules/world")
+    local world_switch = require("modules/world_switch")
 
     local function build_secondary_opts(opts, state, include_fallback)
         local secondary_opts =
@@ -35,7 +38,13 @@ return function(Class)
                         players.SavePlayers()
                         next_step()
                     else
-                        index:SaveCurrent(next_step)
+                        index:SaveCurrent(function(success)
+                            if success == false then
+                                cb(false, "save")
+                            else
+                                next_step()
+                            end
+                        end)
                     end
                 elseif opts.save_current_on_wait_failure then
                     index:SaveCurrent(function()
@@ -137,7 +146,7 @@ return function(Class)
             self[spec.local_method](self, index, opts, done)
         end, function(success)
             if success then
-                local state = get_world_index_state(index)
+                local state = state_store.GetState(index)
                 shards.RestartCurrentSlotAfterShardRPC(index,
                 {
                     world_index_transition = opts.reason or spec.default_reason,
@@ -164,8 +173,8 @@ return function(Class)
         opts = opts or {}
         local target = transition.GetTargetFromOpts(opts)
         if target ~= nil and
-            (reject_unavailable_world_target(index, target, opts.allow_unknown_world_type) or
-            reject_current_world_target(index, target, opts.allow_current_world_target)) then
+            (target_commit.RejectUnavailableTarget(index, target, opts.allow_unknown_world_type) or
+            target_commit.RejectCurrentTarget(index, target, opts.allow_current_world_target)) then
             cb(false)
             return false
         end
@@ -196,7 +205,7 @@ return function(Class)
         end
 
         opts = opts or {}
-        local state = get_world_index_state(index)
+        local state = state_store.GetState(index)
         local target = transition.GetTargetFromOpts(opts, state)
         if target == nil and opts.chapter ~= nil and type(state.level_sequence) == "table" then
             target = transition.NormalizeTarget(
@@ -204,9 +213,9 @@ return function(Class)
             )
         end
         if target ~= nil and
-            (reject_unavailable_world_target(index, target,
+            (target_commit.RejectUnavailableTarget(index, target,
                 opts.allow_unknown_world_type == true or state.allow_unknown_world_type == true) or
-            reject_current_world_target(index, target,
+            target_commit.RejectCurrentTarget(index, target,
                 opts.allow_current_world_target == true or state.allow_current_world_target == true)) then
             cb(false)
             return false
@@ -243,7 +252,7 @@ return function(Class)
             self:ReturnToStoredWorld(index, reason or "return", done, player_sessions, { defer_cleanup = true })
         end, function(success, phase)
             if success then
-                finalize_deferred_return(index, get_world_index_state(index), function(finalized)
+                world_switch.FinalizeDeferredReturn(index, state_store.GetState(index), function(finalized)
                     if not finalized then
                         print("[Shard World Index] Deferred return cleanup will resume after restart.")
                     end
@@ -253,7 +262,7 @@ return function(Class)
                     cb(true)
                 end)
             elseif phase == "commit" then
-                rollback_deferred_return(index, get_world_index_state(index), function()
+                world_switch.RollbackDeferredReturn(index, state_store.GetState(index), function()
                     cb(false)
                 end)
             else

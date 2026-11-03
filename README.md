@@ -172,3 +172,34 @@ Other mods can access the current instance through
 
 The lower-level methods remain available for integrations that build target
 tables dynamically.
+
+## Save Recovery
+
+Each participating shard saves its source world before acknowledging transition
+preparation. Failed cross-world commits restore the previous target index,
+source index, and world generation override. Completed secondary transactions
+retain a receipt so repeated commit and finalize requests are idempotent.
+
+Session cleanup checks every known sidecar, including inactive worlds. Corrupt
+sidecars, corrupt manifests, and unsupported newer formats block loading,
+overwriting, and session cleanup.
+
+New world saves include a server-only WorldIndex checkpoint in map persistence
+data. Rollback restores the corresponding player and index state within the
+current world visit. Completed cross-world migrations and distributed commit
+decisions are not rolled back. Snapshots preceding the current visit are
+rejected; rollback becomes available after its first successful world save.
+Ordinary restarts do not replay already consumed player migration records.
+
+Run the regression tests from the mod directory with Lua 5.1:
+
+```sh
+lua tests/save_management_regression.lua
+```
+
+The tests use in-memory engine interfaces and the installed vanilla scripts.
+Set `DST_SCRIPTS` to another vanilla scripts directory when needed. They do not
+read or modify real saves.
+
+When the sibling `Adventure-Mode` mod is available, the suite also checks its
+entry and reload workflow. Set `DST_ADVENTURE_MOD` if that mod is elsewhere.

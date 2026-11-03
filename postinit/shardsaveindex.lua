@@ -127,13 +127,3 @@ function ShardSaveIndex:Load(callback)
         end)
     end)
 end
-
-local _GetValidSlots = ShardSaveIndex.GetValidSlots
-function ShardSaveIndex:GetValidSlots()
-    return _GetValidSlots(self)
-end
-
-local _Save = ShardSaveIndex.Save
-function ShardSaveIndex:Save(callback)
-    return _Save(self, callback)
-end

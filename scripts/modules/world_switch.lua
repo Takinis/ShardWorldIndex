@@ -1,18 +1,23 @@
-return function(Class)
-    local ShardWorldIndex = Class
+local M = {}
+
+function M.Install(Class)
     local index_state = require("modules/index_state")
+    local manifest = require("modules/manifest")
     local players = require("modules/players")
     local shards = require("modules/shards")
+    local state_store = require("modules/state_store")
+    local storage = require("modules/storage")
+    local target_commit = require("modules/target_commit")
     local transaction_api = require("modules/transaction")
     local transition = require("modules/transition")
     local world = require("modules/world")
 
-    function ShardWorldIndex:BeginWorldIndex(index, opts, cb)
+    function Class:BeginWorldIndex(index, opts, cb)
         index, opts, cb = resolve_index_args(self, index, opts, cb)
         cb = cb or noop
         opts = opts or {}
 
-        local active_state = get_world_index_state(index)
+        local active_state = state_store.GetState(index)
         if active_state ~= nil and active_state.active == true then
             print("[Shard World Index] A world index is already active.")
             cb(false)
@@ -32,18 +37,21 @@ return function(Class)
             cb(false)
             return
         end
-        if reject_unavailable_world_target(index, target, opts.allow_unknown_world_type) or
-            (opts.secondary ~= true and reject_current_world_target(index, target, opts.allow_current_world_target)) then
+        if target_commit.RejectUnavailableTarget(index, target, opts.allow_unknown_world_type) or
+            (opts.secondary ~= true and target_commit.RejectCurrentTarget(index, target, opts.allow_current_world_target)) then
             cb(false)
             return
         end
         local shardid = shards.GetIndexShard(index)
-        local file_id = get_world_index_file_id_for_shard(opts.file_id or transition.GetTargetFileID(target, nil, shardid), shardid)
+        local file_id = state_store.GetFileIDForShard(
+            opts.file_id or transition.GetTargetFileID(target, nil, shardid),
+            shardid
+        )
 
-        read_worldgenoverride_raw(index, function(home_wgo)
+        storage.ReadWorldGenOverrideRaw(index, function(home_wgo)
             local state = deepcopy_safe(opts.state) or {}
             state.active = true
-            state.file_id = get_world_index_file_id_for_shard(state.file_id or file_id, shardid)
+            state.file_id = state_store.GetFileIDForShard(state.file_id or file_id, shardid)
             state.kind = state.kind or opts.kind or "world_index"
             state.allow_unknown_world_type = state.allow_unknown_world_type == true or opts.allow_unknown_world_type == true
             state.allow_current_world_target = state.allow_current_world_target == true or opts.allow_current_world_target == true
@@ -83,11 +91,11 @@ return function(Class)
             state.home = home
             state.main = state.main or deepcopy_safe(home)
 
-            commit_world_index_target(index, state, target, opts.keep_session, cb)
+            target_commit.CommitTarget(index, state, target, opts.keep_session, cb)
         end)
     end
 
-    function ShardWorldIndex:BeginSecondaryWorldIndex(index, opts, cb)
+    function Class:BeginSecondaryWorldIndex(index, opts, cb)
         index, opts, cb = resolve_index_args(self, index, opts, cb)
         opts = opts or {}
         opts.secondary = true
@@ -98,10 +106,10 @@ return function(Class)
         self:BeginWorldIndex(index, opts, cb)
     end
 
-    function ShardWorldIndex:AdvanceSecondaryWorldIndex(index, opts, cb)
+    function Class:AdvanceSecondaryWorldIndex(index, opts, cb)
         index, opts, cb = resolve_index_args(self, index, opts, cb)
         opts = opts or {}
-        local state = get_world_index_state(index)
+        local state = state_store.GetState(index)
         if state == nil or not state.active then
             self:BeginSecondaryWorldIndex(index, opts, cb)
             return
@@ -110,13 +118,13 @@ return function(Class)
         self:QueueNextWorld(index, opts, cb)
     end
 
-    function ShardWorldIndex:QueueNextWorld(index, opts, cb)
+    function Class:QueueNextWorld(index, opts, cb)
         index, opts, cb = resolve_index_args(self, index, opts, cb)
         cb = cb or noop
         opts = opts or {}
 
-        local state = get_world_index_state(index)
-        if state == nil or not state.active or get_world_index_home_state(state) == nil then
+        local state = state_store.GetState(index)
+        if state == nil or not state.active or state_store.GetHomeState(state) == nil then
             print("[Shard World Index] No active world index to advance.")
             cb(false)
             return
@@ -131,20 +139,27 @@ return function(Class)
             cb(false)
             return
         end
-        if reject_unavailable_world_target(index, target,
+        if target_commit.RejectUnavailableTarget(index, target,
             opts.allow_unknown_world_type == true or state.allow_unknown_world_type == true) or
-            (state.secondary ~= true and reject_current_world_target(index, target,
+            (state.secondary ~= true and target_commit.RejectCurrentTarget(index, target,
                 opts.allow_current_world_target == true or state.allow_current_world_target == true)) then
             cb(false)
             return
         end
         local shardid = shards.GetIndexShard(index)
-        local current_file_id = normalize_world_index_file_id(state.file_id)
-        local queued_file_id = get_world_index_file_id_for_shard(opts.file_id or transition.GetTargetFileID(target, state.file_id, shardid), shardid)
+        local current_file_id = manifest.NormalizeFileID(state.file_id)
+        local queued_file_id = state_store.GetFileIDForShard(
+            opts.file_id or transition.GetTargetFileID(target, state.file_id, shardid),
+            shardid
+        )
         local previous_state = nil
+        local original_target_state = nil
+        local target_state_read = false
+        local original_index = index_state.Capture(index)
+        local original_worldgenoverride = state.current_worldgenoverride
         if queued_file_id ~= current_file_id then
             previous_state = deepcopy_safe(state)
-            state = deepcopy_safe(state) or {}
+            state = deepcopy_safe(state)
         end
         state.file_id = queued_file_id
 
@@ -155,9 +170,9 @@ return function(Class)
         end
         if state.track_player_positions ~= false then
             local player_positions = players.GetPlayerPositions(player_sessions)
-            set_player_positions_for_session(state, index:GetSession(), player_positions)
+            state_store.SetPlayerPositionsForSession(state, index:GetSession(), player_positions)
             if previous_state ~= nil then
-                set_player_positions_for_session(previous_state, index:GetSession(), player_positions)
+                state_store.SetPlayerPositionsForSession(previous_state, index:GetSession(), player_positions)
             end
         end
         pending.reason = pending.reason or opts.reason or "advance"
@@ -172,7 +187,7 @@ return function(Class)
         end
         pending.generation_source_session_id = pending.generation_source_session_id or state.current_session_id or index:GetSession()
         pending.generation_recovery_state = pending.generation_recovery_state or
-            build_generation_recovery_state(index, state, pending.generation_source_session_id)
+            build_generation_recovery_state(index, previous_state or state, pending.generation_source_session_id)
         pending.reuse_existing = opts.reuse_existing ~= false
         state.pending_generation = pending
         state.reuse_existing = opts.reuse_existing ~= false
@@ -193,24 +208,47 @@ return function(Class)
                 parked_state.pending_generation = nil
                 parked_state.checked_existing_world = nil
                 parked_state.updated_at = os.time()
-                write_world_index_sidecar(index, parked_state, function(parked_saved)
+                state_store.WriteSidecar(index, parked_state, function(parked_saved)
                     if not parked_saved then
-                        cb(false, pending_chapter)
+                        finish_commit(false)
                         return
                     end
-                    set_world_index_state(index, parked_state, current_file_id)
-                    set_world_index_state(index, state, queued_file_id)
+                    state_store.SetState(index, parked_state, current_file_id)
+                    state_store.SetState(index, state, queued_file_id)
                     cb(true, pending_chapter)
                 end, current_file_id)
                 return
             end
 
             if not success and previous_state ~= nil then
-                write_world_index_sidecar(index, nil, function()
-                    set_world_index_state(index, nil, queued_file_id)
-                    set_world_index_state(index, previous_state, current_file_id)
+                if not target_state_read then
+                    state_store.SetState(index, previous_state, current_file_id)
                     cb(false, pending_chapter)
-                end, queued_file_id)
+                    return
+                end
+                index_state.Apply(index, original_index)
+                storage.RestoreWorldGenOverride(index, original_worldgenoverride, function(restored)
+                    if not restored then
+                        cb(false, pending_chapter)
+                        return
+                    end
+                    index_state.Persist(index, original_target_state, {
+                        file_id = queued_file_id,
+                        set_state = false,
+                    }, function(saved)
+                        if not saved then
+                            cb(false, pending_chapter)
+                            return
+                        end
+                        state_store.WriteSidecar(index, previous_state, function(source_saved)
+                            if source_saved then
+                                state_store.SetState(index, original_target_state, queued_file_id)
+                                state_store.SetState(index, previous_state, current_file_id)
+                            end
+                            cb(false, pending_chapter)
+                        end, current_file_id)
+                    end)
+                end)
                 return
             end
 
@@ -219,17 +257,21 @@ return function(Class)
 
         local function commit_queued_state()
             transition.ApplyPendingGenerationState(state)
-            commit_world_index_target(index, state, target, opts.keep_session, function(success)
+            target_commit.CommitTarget(index, state, target, opts.keep_session, function(success)
                 finish_commit(success)
             end)
         end
 
         if previous_state ~= nil then
-            read_world_index_sidecar(index, function(existing_state, read_success)
+            storage.ReadWorldGenOverrideRaw(index, function(raw)
+                original_worldgenoverride = raw
+            state_store.ReadSidecar(index, function(existing_state, read_success)
                 if read_success == false then
                     finish_commit(false)
                     return
                 end
+                original_target_state = deepcopy_safe(existing_state)
+                target_state_read = true
                 state.current_session_id = nil
                 state.current_worldgenoverride = nil
                 state.current_world = nil
@@ -252,7 +294,7 @@ return function(Class)
                     state.player_positions = deepcopy_safe(existing_state.player_positions)
                 end
 
-                write_world_index_sidecar(index, state, function(saved)
+                state_store.WriteSidecar(index, state, function(saved)
                     if saved then
                         commit_queued_state()
                     else
@@ -260,10 +302,11 @@ return function(Class)
                     end
                 end)
             end, queued_file_id)
+            end)
             return
         end
 
-        write_world_index_sidecar(index, state, function(saved)
+        state_store.WriteSidecar(index, state, function(saved)
             if saved then
                 commit_queued_state()
             else
@@ -272,13 +315,13 @@ return function(Class)
         end)
     end
 
-    function ShardWorldIndex:ReturnToStoredWorld(index, reason, cb, player_sessions, opts)
+    function Class:ReturnToStoredWorld(index, reason, cb, player_sessions, opts)
         index, reason, cb, player_sessions, opts = resolve_index_args(self, index, reason, cb, player_sessions, opts)
         cb = cb or noop
         opts = opts or {}
 
-        local state = get_world_index_state(index)
-        local home = get_world_index_home_state(state)
+        local state = state_store.GetState(index)
+        local home = state_store.GetHomeState(state)
         if state == nil or not state.active or home == nil then
             print("[Shard World Index] No active world index to return from.")
             cb(false)
@@ -300,12 +343,12 @@ return function(Class)
 
         local current_index = index_state.Capture(index)
         local current_worldgenoverride = state.current_worldgenoverride
-        local cleanup_session_id = should_cleanup_world_index_session(state) and state.current_session_id or nil
+        local cleanup_session_id = target_commit.ShouldCleanupSession(state) and state.current_session_id or nil
         local sessions = player_sessions or state.return_player_sessions
 
         local player_positions = players.GetPlayerPositions(sessions)
         if player_positions ~= nil then
-            set_player_positions_for_session(state, index:GetSession(), player_positions)
+            state_store.SetPlayerPositionsForSession(state, index:GetSession(), player_positions)
         end
 
         state.return_player_sessions = deepcopy_safe(sessions)
@@ -327,9 +370,9 @@ return function(Class)
 
         local function restore_current_index(done)
             index_state.Apply(index, current_index)
-            restore_worldgenoverride(index, current_worldgenoverride, function()
+            storage.RestoreWorldGenOverride(index, current_worldgenoverride, function()
                 save_index(index, function()
-                    set_world_index_state(index, state)
+                    state_store.SetState(index, state)
                     done(false)
                 end)
             end)
@@ -353,7 +396,7 @@ return function(Class)
             transaction_api.SetPhase(finished_state, opts.defer_cleanup and "finalize_pending" or "committed")
 
             world.SwitchIndexToExistingWorld(index, home)
-            restore_worldgenoverride(index, home.worldgenoverride, function(worldgenoverride_saved)
+            storage.RestoreWorldGenOverride(index, home.worldgenoverride, function(worldgenoverride_saved)
                 if not worldgenoverride_saved then
                     restore_current_index(cb)
                     return
@@ -363,12 +406,12 @@ return function(Class)
                         restore_current_index(cb)
                         return
                     end
-                    write_world_index_sidecar(index, finished_state, function(sidecar_saved)
+                    state_store.WriteSidecar(index, finished_state, function(sidecar_saved)
                         if not sidecar_saved then
                             restore_current_index(cb)
                             return
                         end
-                        set_world_index_state(index, finished_state)
+                        state_store.SetState(index, finished_state)
                         if not opts.defer_cleanup and cleanup_session_id ~= nil and cleanup_session_id ~= "" then
                             world.DeleteSessionIfNotHome(cleanup_session_id, home.session_id)
                         end
@@ -378,7 +421,7 @@ return function(Class)
             end)
         end
 
-        write_world_index_sidecar(index, state, function(pending_saved)
+        state_store.WriteSidecar(index, state, function(pending_saved)
             if not pending_saved then
                 state.return_pending = nil
                 cb(false)
@@ -416,7 +459,7 @@ return function(Class)
             state[field] = nil
         end
         transaction_api.SetPhase(state, "finalized")
-        write_world_index_sidecar(index, state, function(saved)
+        state_store.WriteSidecar(index, state, function(saved)
             if not saved then
                 for _, field in ipairs(fields) do
                     state[field] = previous[field]
@@ -424,8 +467,8 @@ return function(Class)
                 cb(false)
                 return
             end
-            set_world_index_state(index, state, file_id)
-            local home = get_world_index_home_state(state)
+            state_store.SetState(index, state, file_id)
+            local home = state_store.GetHomeState(state)
             if cleanup_session_id ~= nil and cleanup_session_id ~= "" and home ~= nil then
                 world.DeleteSessionIfNotHome(cleanup_session_id, home.session_id)
             end
@@ -482,20 +525,19 @@ return function(Class)
         }, cb)
     end
 
-    function ShardWorldIndex:FinalizeDeferredReturn(index, state, cb)
+    function Class:FinalizeDeferredReturn(index, state, cb)
         index, state, cb = resolve_index_args(self, index, state, cb)
         finalize_deferred_return(index, state, cb)
     end
 
-    function ShardWorldIndex:RollbackDeferredReturn(index, state, cb)
+    function Class:RollbackDeferredReturn(index, state, cb)
         index, state, cb = resolve_index_args(self, index, state, cb)
         rollback_deferred_return(index, state, cb)
     end
 
-    return
-    {
-        FinalizeState = finalize_world_index_state,
-        FinalizeDeferredReturn = finalize_deferred_return,
-        RollbackDeferredReturn = rollback_deferred_return,
-    }
+    M.FinalizeState = finalize_world_index_state
+    M.FinalizeDeferredReturn = finalize_deferred_return
+    M.RollbackDeferredReturn = rollback_deferred_return
 end
+
+return M

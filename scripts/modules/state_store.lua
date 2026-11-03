@@ -1,24 +1,12 @@
 local manifest = require("modules/manifest")
-local players = require("modules/players")
 local recovery = require("modules/recovery")
-local shards = require("modules/shards")
 local storage = require("modules/storage")
 local transaction = require("modules/transaction")
     local registered_file_ids = {}
     local registered_secondary_file_ids = {}
 
-    local function normalize_file_id(file_id)
-        if file_id == nil or file_id == "" then
-            return "world"
-        end
-
-        file_id = string.lower(tostring(file_id)):gsub("[^%w_%-]", "_")
-        file_id = file_id:gsub("_+", "_"):gsub("^_+", ""):gsub("_+$", "")
-        return file_id ~= "" and file_id or "world"
-    end
-
     local function add_file_id(list, seen, file_id)
-        file_id = normalize_file_id(file_id)
+        file_id = manifest.NormalizeFileID(file_id)
         if not seen[file_id] then
             seen[file_id] = true
             list[#list + 1] = file_id
@@ -26,10 +14,10 @@ local transaction = require("modules/transaction")
     end
 
     local function register_file_id(file_id, secondary_file_id)
-        file_id = normalize_file_id(file_id)
+        file_id = manifest.NormalizeFileID(file_id)
         registered_file_ids[file_id] = true
         if secondary_file_id ~= nil then
-            secondary_file_id = normalize_file_id(secondary_file_id)
+            secondary_file_id = manifest.NormalizeFileID(secondary_file_id)
             registered_file_ids[secondary_file_id] = true
             registered_secondary_file_ids[file_id] = secondary_file_id
         end
@@ -37,7 +25,7 @@ local transaction = require("modules/transaction")
     end
 
     local function get_file_id_for_shard(file_id, shardid)
-        file_id = normalize_file_id(file_id)
+        file_id = manifest.NormalizeFileID(file_id)
         return not is_master_shard_id(shardid) and
             (registered_secondary_file_ids[file_id] or SECONDARY_WORLD_INDEX_FILE_IDS[file_id]) or file_id
     end
@@ -59,7 +47,11 @@ local transaction = require("modules/transaction")
     local function get_known_file_ids(index, extra_file_id)
         local ids = {}
         local seen = {}
-        local shardid = index ~= nil and shards.GetIndexShard(index) or "Master"
+        local shardid = index.GetShard ~= nil and index:GetShard() or nil
+        if shardid == nil or shardid == "" then
+            shardid = TheShard ~= nil and TheShard.IsSecondary ~= nil and
+                TheShard:IsSecondary() and "Caves" or "Master"
+        end
 
         local function add_known_file_id(file_id)
             file_id = get_file_id_for_shard(file_id, shardid)
@@ -97,10 +89,7 @@ local transaction = require("modules/transaction")
     end
 
     local function set_player_positions_for_session(state, session_id, player_positions)
-        if state == nil then
-            return
-        end
-
+        local players = require("modules/players")
         state.player_positions = players.MergePlayerPositions(state.player_positions, player_positions)
         local home = get_home_state(state)
         if home ~= nil and home.session_id == session_id then
@@ -113,17 +102,17 @@ local transaction = require("modules/transaction")
 
     local function ensure_home_aliases(state)
         if state ~= nil then
-            state.file_id = normalize_file_id(state.file_id)
+            state.file_id = manifest.NormalizeFileID(state.file_id)
             if state.home == nil and state.main ~= nil then
                 state.home = state.main
             elseif state.main == nil and state.home ~= nil then
                 state.main = state.home
             end
             if state.home ~= nil and state.home.player_positions == nil then
-                state.home.player_positions = players.GetPlayerPositions(state.home.player_sessions)
+                state.home.player_positions = require("modules/players").GetPlayerPositions(state.home.player_sessions)
             end
             if state.main ~= nil and state.main.player_positions == nil then
-                state.main.player_positions = players.GetPlayerPositions(state.main.player_sessions)
+                state.main.player_positions = require("modules/players").GetPlayerPositions(state.main.player_sessions)
             end
         end
         return state
@@ -140,7 +129,7 @@ local transaction = require("modules/transaction")
     end
 
     local function matches_current_session(index, state)
-        local session_id = index ~= nil and index.GetSession ~= nil and index:GetSession() or nil
+        local session_id = index:GetSession()
         return session_id ~= nil and
             session_id ~= "" and
             state ~= nil and
@@ -160,14 +149,10 @@ local transaction = require("modules/transaction")
     end
 
     local function get_read_priority(index, state, file_id)
-        if state == nil or state.active ~= true then
-            return nil
-        end
-
         local priority = is_pending_generation(state) and 10 or 0
         local transition_file_id = Settings ~= nil and Settings.world_index_file_id or nil
         if transition_file_id ~= nil and
-            normalize_file_id(transition_file_id) == normalize_file_id(file_id) then
+            manifest.NormalizeFileID(transition_file_id) == manifest.NormalizeFileID(file_id) then
             priority = priority + 100
         end
         if matches_current_session(index, state) then
@@ -177,7 +162,44 @@ local transaction = require("modules/transaction")
     end
 
     local function read_named_sidecar(index, file_id, cb)
-        return storage.ReadNamedSidecar(index, file_id, cb)
+        storage.ReadNamedSidecar(index, file_id, function(state, ...)
+            cb(ensure_home_aliases(state), ...)
+        end)
+    end
+
+    local function has_pending_recovery(state)
+        return state ~= nil and (state.return_pending ~= nil or
+            state.deferred_return == true or state.secondary_transition ~= nil or
+            state.secondary_finalize_pending ~= nil)
+    end
+
+    local function read_all_sidecars(index, cb)
+        manifest.Read(index, function(_, valid)
+            if valid == false then
+                cb(nil, false)
+                return
+            end
+            local ids = get_known_file_ids(index)
+            local states = {}
+            local i = 1
+            local function read_next()
+                if i > #ids then
+                    cb(states, true)
+                    return
+                end
+                local file_id = ids[i]
+                i = i + 1
+                read_named_sidecar(index, file_id, function(state, _, valid)
+                    if valid == false then
+                        cb(nil, false)
+                        return
+                    end
+                    states[file_id] = state
+                    read_next()
+                end)
+            end
+            read_next()
+        end)
     end
 
     local function read_sidecar(index, cb, file_id)
@@ -194,11 +216,13 @@ local transaction = require("modules/transaction")
         local active_priority = nil
         local return_recovery_state = nil
         local pending_player_state = nil
+        local loaded_states = {}
         local read_success = true
         local i = 1
 
         local function read_next()
             if i > #ids then
+                index.world_index_states = loaded_states
                 cb(active_state or return_recovery_state or pending_player_state, read_success)
                 return
             end
@@ -211,6 +235,7 @@ local transaction = require("modules/transaction")
                     read_next()
                     return
                 end
+                loaded_states[current_file_id] = state
                 if state ~= nil and state.active == true then
                     local priority = get_read_priority(index, state, current_file_id)
                     local candidate_is_newer = false
@@ -225,11 +250,12 @@ local transaction = require("modules/transaction")
                         priority == active_priority and candidate_is_newer then
                         active_state = state
                         active_priority = priority
-                        active_state.file_id = normalize_file_id(active_state.file_id or current_file_id)
+                        active_state.file_id = manifest.NormalizeFileID(active_state.file_id or current_file_id)
                     end
-                elseif state ~= nil and type(state.return_pending) == "table" and
-                    type(state.parent_world_index_state) == "table" then
-                    return_recovery_state = return_recovery_state or state
+                elseif has_pending_recovery(state) then
+                    if return_recovery_state == nil or transaction.IsNewer(state, return_recovery_state) then
+                        return_recovery_state = state
+                    end
                 elseif state ~= nil and type(state.pending_player_sessions) == "table" and
                     #state.pending_player_sessions > 0 and
                     state.pending_player_session_id == index:GetSession() then
@@ -243,7 +269,7 @@ local transaction = require("modules/transaction")
     end
 
     local function write_sidecar(index, data, cb, file_id)
-        return storage.WriteSidecar(index, data, cb, file_id)
+        return storage.WriteSidecar(index, ensure_home_aliases(data), cb, file_id)
     end
 
     local function get_state_map(index)
@@ -253,8 +279,8 @@ local transaction = require("modules/transaction")
 
     local function choose_state(states, predicate)
         local candidates = {}
-        for file_id, state in pairs(states or {}) do
-            if predicate == nil or predicate(state) then
+        for file_id, state in pairs(states) do
+            if predicate(state) then
                 candidates[#candidates + 1] = { file_id = file_id, state = state }
             end
         end
@@ -263,23 +289,19 @@ local transaction = require("modules/transaction")
     end
 
     local function set_state(index, state, file_id)
-        if index == nil then
-            return
-        end
-
-        file_id = normalize_file_id(file_id or (state ~= nil and state.file_id or nil))
+        file_id = manifest.NormalizeFileID(file_id or (state ~= nil and state.file_id or nil))
         local states = get_state_map(index)
         if state ~= nil then
             state.file_id = file_id
             states[file_id] = ensure_home_aliases(state)
             if index.world_index_state == nil or state.active == true or
-                normalize_file_id(index.world_index_state.file_id) == file_id then
+                manifest.NormalizeFileID(index.world_index_state.file_id) == file_id then
                 index.world_index_state = states[file_id]
             end
         else
             states[file_id] = nil
             if index.world_index_state ~= nil and
-                normalize_file_id(index.world_index_state.file_id) == file_id then
+                manifest.NormalizeFileID(index.world_index_state.file_id) == file_id then
                 index.world_index_state = choose_state(states, function(stored_state)
                     return stored_state.active == true
                 end)
@@ -288,12 +310,12 @@ local transaction = require("modules/transaction")
     end
 
     local function find_state(index, predicate, choose_newest)
-        local current = ensure_home_aliases(index ~= nil and index.world_index_state or nil)
+        local current = ensure_home_aliases(index.world_index_state)
         if predicate(current) then
             return current
         end
 
-        local states = index ~= nil and index.world_index_states or nil
+        local states = index.world_index_states
         if states == nil then
             return nil
         end
@@ -314,18 +336,14 @@ local transaction = require("modules/transaction")
     end
 
     local function get_state(index, file_id)
-        if index == nil then
-            return nil
-        end
-
         if file_id ~= nil then
-            file_id = normalize_file_id(file_id)
+            file_id = manifest.NormalizeFileID(file_id)
             local states = index.world_index_states
             if states ~= nil and states[file_id] ~= nil then
                 return ensure_home_aliases(states[file_id])
             end
             if index.world_index_state ~= nil and
-                normalize_file_id(index.world_index_state.file_id) == file_id then
+                manifest.NormalizeFileID(index.world_index_state.file_id) == file_id then
                 return ensure_home_aliases(index.world_index_state)
             end
             return nil
@@ -372,15 +390,11 @@ local transaction = require("modules/transaction")
             return is_pending_generation(state) and state or nil
         end
 
-        return find_state(index, function(state)
-            return is_pending_generation(state)
-        end, false)
+        return find_state(index, is_pending_generation, false)
     end
 
     local function get_pending_state(index)
-        return find_state(index, function(state)
-            return is_pending_generation(state)
-        end, false)
+        return find_state(index, is_pending_generation, false)
     end
 
     local function get_delete_state(index)
@@ -389,7 +403,7 @@ local transaction = require("modules/transaction")
 
     local function clear_sidecar(index, cb, file_id)
         local state = get_state(index)
-        file_id = normalize_file_id(file_id or (state ~= nil and state.file_id or nil))
+        file_id = manifest.NormalizeFileID(file_id or (state ~= nil and state.file_id or nil))
         write_sidecar(index, nil, function(success)
             if success then
                 set_state(index, nil, file_id)
@@ -400,7 +414,11 @@ local transaction = require("modules/transaction")
 
     local function clear_all_sidecars(index, cb)
         cb = cb or noop
-        manifest.Read(index, function()
+        manifest.Read(index, function(_, valid)
+            if valid == false then
+                cb(false)
+                return
+            end
             local ids = get_known_file_ids(index, index.world_index_state ~= nil and index.world_index_state.file_id or nil)
             local i = 1
 
@@ -432,13 +450,13 @@ local transaction = require("modules/transaction")
             return
         end
 
-        file_id = normalize_file_id(file_id)
+        file_id = manifest.NormalizeFileID(file_id)
         local filename = "shardindex_"..file_id
         TheSim:GetPersistentStringInClusterSlot(slot, "Master", filename, function(load_success, str)
             if load_success and str ~= nil and #str > 0 then
                 local success, data = RunInSandboxSafe(str)
-                if success and type(data) == "table" then
-                    data.file_id = normalize_file_id(data.file_id or file_id)
+                if success and storage.IsValidState(data) then
+                    data.file_id = manifest.NormalizeFileID(data.file_id or file_id)
                     cb(ensure_home_aliases(data), true, true)
                     return
                 end
@@ -451,7 +469,11 @@ local transaction = require("modules/transaction")
 
     local function read_sidecar_in_slot(slot, cb)
         cb = cb or noop
-        manifest.ReadBySlot(slot, "Master", function(data)
+        manifest.ReadBySlot(slot, "Master", function(data, valid)
+            if valid == false then
+                cb(nil, false)
+                return
+            end
             local holder = { world_index_manifest = data }
             local ids = get_known_file_ids(holder)
             local candidates = {}
@@ -542,11 +564,9 @@ local transaction = require("modules/transaction")
 
     return
     {
-        NormalizeFileID = normalize_file_id,
         RegisterFileID = register_file_id,
         GetFileIDForShard = get_file_id_for_shard,
         IsKnownFileID = is_known_file_id,
-        GetKnownFileIDs = get_known_file_ids,
         GetHomeState = get_home_state,
         SetPlayerPositionsForSession = set_player_positions_for_session,
         EnsureHomeAliases = ensure_home_aliases,
@@ -554,13 +574,12 @@ local transaction = require("modules/transaction")
         MatchesCurrentSession = matches_current_session,
         IsPendingGeneration = is_pending_generation,
         ReadNamedSidecar = read_named_sidecar,
+        ReadAllSidecars = read_all_sidecars,
+        HasPendingRecovery = has_pending_recovery,
         ReadSidecar = read_sidecar,
         WriteSidecar = write_sidecar,
         SetState = set_state,
         GetState = get_state,
-        GetCurrentState = get_current_state,
-        GetPendingTransitionState = get_pending_transition_state,
-        GetPendingState = get_pending_state,
         GetDeleteState = get_delete_state,
         ClearSidecar = clear_sidecar,
         ClearAllSidecars = clear_all_sidecars,
