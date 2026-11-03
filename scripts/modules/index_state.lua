@@ -1,3 +1,6 @@
+local state_store = require("modules/state_store")
+local storage = require("modules/storage")
+
 local function capture(index)
     return
     {
@@ -9,7 +12,6 @@ local function capture(index)
 end
 
 local function apply(index, snapshot)
-    snapshot = snapshot or {}
     index.session_id = snapshot.session_id
     index.world = deepcopy_safe(snapshot.world) or { options = {} }
     index.server = deepcopy_safe(snapshot.server) or {}
@@ -27,9 +29,9 @@ local function persist(index, state, opts, cb)
                 cb(false)
                 return
             end
-            write_world_index_sidecar(index, state, function(sidecar_saved)
+            state_store.WriteSidecar(index, state, function(sidecar_saved)
                 if sidecar_saved and opts.set_state ~= false then
-                    set_world_index_state(index, state, opts.file_id)
+                    state_store.SetState(index, state, opts.file_id)
                 end
                 cb(sidecar_saved == true)
             end, opts.file_id)
@@ -37,7 +39,7 @@ local function persist(index, state, opts, cb)
     end
 
     if opts.restore_worldgenoverride then
-        restore_worldgenoverride(index, opts.worldgenoverride, function(restored)
+        storage.RestoreWorldGenOverride(index, opts.worldgenoverride, function(restored)
             if restored then
                 save_state()
             else

@@ -65,12 +65,17 @@ local function read_manifest(slot, shard, cb)
     read_raw(slot, shard, function(load_success, str)
         if load_success and type(str) == "string" and #str > 0 then
             local success, data = RunInSandboxSafe(str)
-            if success and type(data) == "table" then
-                cb(normalize_manifest(data))
+            if success and type(data) == "table" and
+                (data.version == nil or type(data.version) == "number" and data.version <= manifest_version) and
+                (data.sidecars == nil or type(data.sidecars) == "table") and
+                (data.cleanup_queue == nil or type(data.cleanup_queue) == "table") then
+                cb(normalize_manifest(data), true)
                 return
             end
+            cb(nil, false)
+            return
         end
-        cb(default_manifest())
+        cb(default_manifest(), true)
     end)
 end
 
@@ -101,7 +106,12 @@ local function mutate_at(slot, shard, fn, cb)
             return
         end
         queue.running = true
-        read_manifest(slot, shard, function(data)
+        read_manifest(slot, shard, function(data, valid)
+            if not valid then
+                item.cb(false)
+                next_mutation()
+                return
+            end
             if item.fn(data) == false then
                 item.cb(true)
                 next_mutation()
@@ -129,25 +139,16 @@ end
 
 local function read(index, cb)
     local slot, shard = get_slot_and_shard(index)
-    read_manifest(slot, shard, function(data)
-        if index ~= nil then
+    read_manifest(slot, shard, function(data, valid)
+        if index ~= nil and valid then
             index.world_index_manifest = data
         end
-        (cb or function() end)(data)
+        (cb or function() end)(data, valid)
     end)
 end
 
 local function read_by_slot(slot, shard, cb)
     read_manifest(slot, shard or "Master", cb or function() end)
-end
-
-local function write(index, data, cb)
-    data = type(data) == "table" and data or default_manifest()
-    mutate(index, function(current)
-        current.version = data.version
-        current.sidecars = data.sidecars
-        current.cleanup_queue = data.cleanup_queue
-    end, cb)
 end
 
 local function register(index, file_id, cb)
@@ -190,7 +191,6 @@ return
     NormalizeFileID = normalize_file_id,
     Read = read,
     ReadBySlot = read_by_slot,
-    Write = write,
     Mutate = mutate,
     Register = register,
     Unregister = unregister,

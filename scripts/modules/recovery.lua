@@ -1,6 +1,6 @@
 local function choose_candidate(candidates, transaction)
     local selected = nil
-    for _, candidate in ipairs(candidates or {}) do
+    for _, candidate in ipairs(candidates) do
         if selected == nil then
             selected = candidate
         elseif transaction ~= nil and transaction.IsNewer(candidate.state, selected.state) then
@@ -17,17 +17,7 @@ local function choose_candidate(candidates, transaction)
     return selected
 end
 
-local function sort_file_ids(file_ids)
-    local ids = {}
-    for _, file_id in ipairs(file_ids or {}) do
-        ids[#ids + 1] = tostring(file_id)
-    end
-    table.sort(ids)
-    return ids
-end
-
 return
 {
     ChooseCandidate = choose_candidate,
-    SortFileIDs = sort_file_ids,
 }

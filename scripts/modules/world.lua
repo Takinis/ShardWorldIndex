@@ -1,7 +1,5 @@
 local players = require("modules/players")
 local session = require("modules/session")
-local read_world_session_raw = players.ReadWorldSessionRaw
-local write_worldgenoverride = write_worldgenoverride_str
 
 local function delete_session(session_id, home_session_id)
     session.Delete(ShardGameIndex, session_id, home_session_id)
@@ -147,7 +145,7 @@ end
     end
 
     local function read_world_session_world_type(index, session_id, cb)
-        read_world_session_raw(index, session_id, function(savedata)
+        players.ReadWorldSessionRaw(index, session_id, function(savedata)
             cb(savedata ~= nil and get_savedata_world_type(savedata) or nil, savedata ~= nil)
         end)
     end
@@ -502,10 +500,6 @@ end
         return DataDumper(build_worldgenoverride_data(level), nil, false).."\n"
     end
 
-    local function write_level_worldgenoverride(index, level, cb)
-        write_worldgenoverride(index, build_level_worldgenoverride_raw(level), cb)
-    end
-
     local function switch_index_to_generated_world(index, level, keep_session)
         index.world = { options = resolve_level_options(level) }
         if not keep_session then
@@ -545,28 +539,20 @@ end
 
     return
     {
-        ToPlainOptions = to_plain_options,
         GetWorldGenPresetID = get_worldgen_preset_id,
-        GetSettingsPresetID = get_settings_preset_id,
-        GetLevelOverrides = get_level_overrides,
         NormalizeWorldType = normalize_world_type,
         RegisterWorldType = register_world_type,
         GetSavedataWorldType = get_savedata_world_type,
         ReadWorldSessionWorldType = read_world_session_world_type,
         BuildGeneratedLevelFromTarget = build_generated_level_from_target,
         GetLevelForShard = get_level_for_shard,
-        FindLevelDataByID = find_level_data_by_id,
-        FindDefaultLevelDataByLocation = find_default_level_data_by_location,
-        GetLevelWorldType = get_level_world_type,
         ResolveLevelWorldType = resolve_level_world_type,
         GetStoredWorldType = get_stored_world_type,
         GetStoredWorldPreset = get_stored_world_preset,
         GetRuntimeWorldType = get_runtime_world_type,
         ValidateWorldIndexGeneratedLevel = validate_world_index_generated_level,
         ResolveLevelOptions = resolve_level_options,
-        BuildWorldgenOverrideData = build_worldgenoverride_data,
         BuildLevelWorldgenOverrideRaw = build_level_worldgenoverride_raw,
-        WriteLevelWorldgenOverride = write_level_worldgenoverride,
         SwitchIndexToGeneratedWorld = switch_index_to_generated_world,
         SwitchIndexToExistingWorld = switch_index_to_existing_world,
         SwitchIndexToCurrentWorld = switch_index_to_current_world,

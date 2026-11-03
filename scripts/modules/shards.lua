@@ -1,3 +1,4 @@
+local state_store = require("modules/state_store")
 local transaction = require("modules/transaction")
 local default_rpc_namespace = RPC_NAMESPACE
 local wait_timeout = SECONDARY_SHARD_WAIT_TIMEOUT
@@ -9,10 +10,38 @@ local settle_delay = SECONDARY_SHARD_SETTLE_DELAY
     local prepared_requests = {}
     local restart_pending = false
     local finish_request
+    local persist_pending_secondary_finalize
+    local complete_pending_secondary_finalize
+    local retry_pending_secondary_finalize
+
+    local function schedule_pending_retry()
+        if TheWorld ~= nil then
+            TheWorld:DoStaticTaskInTime(5, function()
+                if ShardGameIndex ~= nil then
+                    retry_pending_secondary_finalize(ShardGameIndex)
+                end
+            end)
+        end
+    end
+
+    local function get_finalize_state(index, request_id)
+        local function matches(state)
+            local pending = state ~= nil and state.secondary_finalize_pending or nil
+            return pending ~= nil and (request_id == nil or pending.request_id == request_id)
+        end
+        local current = index ~= nil and state_store.GetState(index) or nil
+        if matches(current) then
+            return current
+        end
+        for _, state in pairs(index ~= nil and index.world_index_states or {}) do
+            if matches(state) then
+                return state
+            end
+        end
+    end
 
     local function get_durable_pending_request()
-        local index = ShardGameIndex
-        local state = index ~= nil and get_world_index_state(index) or nil
+        local state = get_finalize_state(ShardGameIndex)
         return state ~= nil and state.secondary_finalize_pending or nil
     end
 
@@ -59,10 +88,8 @@ local settle_delay = SECONDARY_SHARD_SETTLE_DELAY
         end
 
         local players = {}
-        if AllPlayers ~= nil then
-            for _, player in ipairs(AllPlayers) do
-                table.insert(players, player)
-            end
+        for _, player in ipairs(AllPlayers) do
+            table.insert(players, player)
         end
 
         for _, player in ipairs(players) do
@@ -116,29 +143,6 @@ local settle_delay = SECONDARY_SHARD_SETTLE_DELAY
         end
     end
 
-    local function send_rpc_to_other_secondary_shards(modname, name, data)
-        if SendModRPCToShard == nil or GetShardModRPC == nil or ShardList == nil or TheShard == nil then
-            return
-        end
-
-        local rpc = GetShardModRPC(modname, name)
-        if rpc == nil then
-            return
-        end
-
-        local payload = data ~= nil and ZipAndEncodeString(data) or nil
-        local self_shard = TheShard:GetShardId()
-        for shardid in pairs(ShardList) do
-            if shardid ~= nil and shardid ~= self_shard and shardid ~= SHARDID.MASTER then
-                if payload ~= nil then
-                    SendModRPCToShard(rpc, shardid, payload)
-                else
-                    SendModRPCToShard(rpc, shardid)
-                end
-            end
-        end
-    end
-
     local function get_secondary_shard_ids()
         local shardids = {}
         if ShardList == nil or TheShard == nil then
@@ -160,7 +164,7 @@ local settle_delay = SECONDARY_SHARD_SETTLE_DELAY
     end
 
     local function send_request_rpc(request, rpc)
-        for _, shardid in ipairs(request.shardids or {}) do
+        for _, shardid in ipairs(request.shardids) do
             local prepared = request.prepared ~= nil and request.prepared[shardid] or nil
             SendModRPCToShard(rpc, shardid, ZipAndEncodeString({
                 request_id = request.id,
@@ -173,7 +177,7 @@ local settle_delay = SECONDARY_SHARD_SETTLE_DELAY
     local function start_waiting_for_replies(request, phase, timeout, label)
         request.phase = phase
         request.waiting = {}
-        for _, shardid in ipairs(request.shardids or {}) do
+        for _, shardid in ipairs(request.shardids) do
             request.waiting[shardid] = true
         end
         pending_request = request
@@ -241,16 +245,17 @@ local settle_delay = SECONDARY_SHARD_SETTLE_DELAY
         end
         local cb = request.cb or noop
         if request.phase == "finalize" then
-            local worldindex = ShardGameIndex ~= nil and ShardGameIndex.worldindex or nil
-            if success and worldindex ~= nil then
-                worldindex:CompletePendingSecondaryFinalize(request.id, function(saved)
+            if success then
+                complete_pending_secondary_finalize(ShardGameIndex, request.id, function(saved)
                     if not saved then
                         print("[Shard World Index] Finalize completed, but clearing the durable decision failed; retry remains pending.")
+                        schedule_pending_retry()
                     end
                     cb(true, request)
                 end)
             else
                 print("[Shard World Index] Finalize acknowledgements are incomplete; the request will be retried after shard reconnect.")
+                schedule_pending_retry()
                 cb(true, request)
             end
             return
@@ -259,6 +264,7 @@ local settle_delay = SECONDARY_SHARD_SETTLE_DELAY
         if request.phase == "commit" and request.commit_decision_persisted and not success then
             prepared_requests[request.id] = nil
             print("[Shard World Index] Commit acknowledgements are incomplete; the durable commit decision will be retried.")
+            schedule_pending_retry()
             cb(true, request)
             return
         end
@@ -370,18 +376,11 @@ local settle_delay = SECONDARY_SHARD_SETTLE_DELAY
             return false
         end
 
-        local worldindex = ShardGameIndex ~= nil and ShardGameIndex.worldindex or nil
-        if worldindex == nil then
-            send_secondary_world_index_abort(request)
-            cb(false)
-            return false
-        end
-
         pending_request = request
         request.phase = "persist_commit"
         request.cb = cb
         request.timeout = timeout
-        worldindex:PersistPendingSecondaryFinalize(request, function(saved)
+        persist_pending_secondary_finalize(ShardGameIndex, request, function(saved)
             if pending_request == request then
                 pending_request = nil
             end
@@ -438,14 +437,14 @@ local settle_delay = SECONDARY_SHARD_SETTLE_DELAY
         return true
     end
 
-    local function persist_pending_secondary_finalize(index, request, cb)
+    persist_pending_secondary_finalize = function(index, request, cb)
         cb = cb or noop
         if index == nil or request == nil then
             cb(false)
             return
         end
 
-        local state = get_world_index_state(index)
+        local state = state_store.GetState(index)
         if state == nil then
             cb(false)
             return
@@ -469,7 +468,7 @@ local settle_delay = SECONDARY_SHARD_SETTLE_DELAY
             updated_at = os.time(),
         }
         transaction.SetPhase(state, "finalize_pending")
-        write_world_index_sidecar(index, state, function(saved)
+        state_store.WriteSidecar(index, state, function(saved)
             if not saved then
                 state.secondary_finalize_pending = previous_pending
                 state.transaction = previous_transaction
@@ -481,9 +480,9 @@ local settle_delay = SECONDARY_SHARD_SETTLE_DELAY
         end, state.file_id)
     end
 
-    local function complete_pending_secondary_finalize(index, request_id, cb)
+    complete_pending_secondary_finalize = function(index, request_id, cb)
         cb = cb or noop
-        local state = index ~= nil and get_world_index_state(index) or nil
+        local state = get_finalize_state(index, request_id)
         local pending = state ~= nil and state.secondary_finalize_pending or nil
         if pending == nil or pending.request_id ~= request_id then
             cb(false)
@@ -492,7 +491,7 @@ local settle_delay = SECONDARY_SHARD_SETTLE_DELAY
 
         state.secondary_finalize_pending = nil
         transaction.SetPhase(state, "finalized")
-        write_world_index_sidecar(index, state, function(saved)
+        state_store.WriteSidecar(index, state, function(saved)
             if not saved then
                 state.secondary_finalize_pending = pending
                 transaction.SetPhase(state, "finalize_pending")
@@ -501,12 +500,12 @@ local settle_delay = SECONDARY_SHARD_SETTLE_DELAY
         end, state.file_id)
     end
 
-    local function retry_pending_secondary_finalize(index)
+    retry_pending_secondary_finalize = function(index)
         if index == nil or pending_request ~= nil or next(prepared_requests) ~= nil then
             return false
         end
 
-        local state = get_world_index_state(index)
+        local state = get_finalize_state(index)
         local pending = state ~= nil and state.secondary_finalize_pending or nil
         if pending == nil or type(pending.request_id) ~= "string" or pending.request_id == "" then
             return false
@@ -521,7 +520,12 @@ local settle_delay = SECONDARY_SHARD_SETTLE_DELAY
             shardids = deepcopy_safe(pending.shardids) or {},
             prepared = deepcopy_safe(pending.prepared) or {},
             timeout = pending.timeout,
-            cb = noop,
+            cb = function(success)
+                if success and state.secondary_finalize_pending == nil and
+                    state.deferred_return == true and state.secondary_transition == nil then
+                    require("modules/world_switch").FinalizeDeferredReturn(index, state, noop)
+                end
+            end,
             commit_decision_persisted = true,
         }
         if #request.shardids == 0 then
@@ -618,7 +622,6 @@ local settle_delay = SECONDARY_SHARD_SETTLE_DELAY
         ForceLocalPlayersToMaster = force_local_players_to_master,
         SendForcePlayersToMasterRPC = send_force_players_to_master_rpc,
         SendShardRPC = send_shard_rpc,
-        SendRPCToOtherSecondaryShards = send_rpc_to_other_secondary_shards,
         RequestSecondaryWorldIndex = request_secondary_world_index,
         CommitSecondaryWorldIndex = commit_secondary_world_index_request,
         AbortSecondaryWorldIndex = abort_secondary_world_index_request,
@@ -632,7 +635,6 @@ local settle_delay = SECONDARY_SHARD_SETTLE_DELAY
         RetryPendingSecondaryFinalize = retry_pending_secondary_finalize,
         SendRPCToMasterShard = send_rpc_to_master_shard,
         GetSecondaryShardPlayerCount = get_secondary_shard_player_count,
-        GetSecondaryShardPlayerCounts = get_secondary_shard_player_counts,
         WaitForSecondaryShardPlayersEmpty = wait_for_secondary_shard_players_empty,
         RestartCurrentSlotAfterShardRPC = restart_current_slot_after_shard_rpc,
     }

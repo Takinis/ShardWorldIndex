@@ -1,5 +1,7 @@
 local players = require("modules/players")
 local shards = require("modules/shards")
+local state_store = require("modules/state_store")
+local storage = require("modules/storage")
 local transaction_api = require("modules/transaction")
 local transition = require("modules/transition")
 local world = require("modules/world")
@@ -10,8 +12,8 @@ local world = require("modules/world")
             return runtime_world_type
         end
 
-        local session_id = index ~= nil and index:GetSession() or nil
-        local state = get_world_index_state(index)
+        local session_id = index:GetSession()
+        local state = state_store.GetState(index)
         if state ~= nil and state.current_session_id == session_id then
             local current_target = transition.NormalizeTarget(state.current_target)
             local world_type = world.NormalizeWorldType(state.world_type)
@@ -28,23 +30,19 @@ local world = require("modules/world")
     end
 
     local function get_current_world_preset(index)
-        local session_id = index ~= nil and index:GetSession() or nil
-        local state = get_world_index_state(index)
+        local session_id = index:GetSession()
+        local state = state_store.GetState(index)
         if state ~= nil and state.current_session_id == session_id then
             local preset = transition.GetPresetID(state.current_preset)
             if preset ~= nil then
                 return preset
             end
         end
-        return world.GetStoredWorldPreset({ world = index ~= nil and index.world or nil })
+        return world.GetStoredWorldPreset({ world = index.world })
     end
 
     local function is_current_world_target(index, target)
         target = transition.NormalizeTarget(target)
-        if index == nil or target == nil then
-            return false
-        end
-
         if target.type == "existing" then
             return target.session_id ~= nil and target.session_id == index:GetSession()
         end
@@ -71,15 +69,15 @@ local world = require("modules/world")
 
     local function reject_unavailable_world_target(index, target, allow_unknown_world_type)
         target = transition.NormalizeTarget(target)
-        if allow_unknown_world_type == true or target == nil or target.type == "existing" then
+        if allow_unknown_world_type == true or target.type == "existing" then
             return false
         end
 
         local shardid = shards.GetIndexShard(index)
         local level = transition.GetGeneratedLevel(target, shardid)
         local world_type = world.ResolveLevelWorldType(level)
-        local file_id = get_world_index_file_id_for_shard(world_type, shardid)
-        if not is_known_world_index_file_id(file_id, shardid) then
+        local file_id = state_store.GetFileIDForShard(world_type, shardid)
+        if not state_store.IsKnownFileID(file_id, shardid) then
             print("[Shard World Index] World type "..tostring(world_type).." is not available on shard "..tostring(shardid)..".")
             return true
         end
@@ -87,10 +85,10 @@ local world = require("modules/world")
     end
 
     local function should_regenerate_current_world_index_session(index, state)
-        ensure_world_index_home_aliases(state)
+        state_store.EnsureHomeAliases(state)
 
-        local home = get_world_index_home_state(state)
-        local session_id = index ~= nil and index:GetSession() or nil
+        local home = state_store.GetHomeState(state)
+        local session_id = index:GetSession()
         return state ~= nil and
             state.active == true and
             home ~= nil and
@@ -98,9 +96,9 @@ local world = require("modules/world")
             home.session_id ~= "" and
             session_id ~= nil and
             session_id ~= "" and
-            world_index_state_matches_current_session(index, state) and
+            state_store.MatchesCurrentSession(index, state) and
             session_id ~= home.session_id and
-            not is_pending_world_generation_state(state)
+            not state_store.IsPendingGeneration(state)
     end
 
     local function get_current_world_index_regen_target(state)
@@ -150,20 +148,20 @@ local world = require("modules/world")
         state.generation_recovery_state = nil
         state.last_player_session_injected = nil
         state.updated_at = os.time()
-        set_world_index_state(index, state)
+        state_store.SetState(index, state)
 
         local worldgenoverride = get_current_world_index_regen_worldgenoverride(index, state)
         if worldgenoverride ~= nil then
             state.current_worldgenoverride = worldgenoverride
-            restore_worldgenoverride(index, worldgenoverride, function(worldgenoverride_saved)
+            storage.RestoreWorldGenOverride(index, worldgenoverride, function(worldgenoverride_saved)
                 if not worldgenoverride_saved then
                     cb(false)
                     return
                 end
-                write_world_index_sidecar(index, state, cb)
+                state_store.WriteSidecar(index, state, cb)
             end)
         else
-            write_world_index_sidecar(index, state, cb)
+            state_store.WriteSidecar(index, state, cb)
         end
         return true
     end
@@ -173,20 +171,19 @@ local world = require("modules/world")
     end
 
     local function should_cleanup_world_index_session(state)
-        return state ~= nil and state.cleanup_current_on_return == true
+        return state.cleanup_current_on_return == true
     end
 
     local function needs_world_generation_postprocess(state, session_identifier)
-        return state ~= nil and
-            state.active == true and
+        return state.active == true and
             state.current_session_id == session_identifier and
             ((has_pending_player_sessions(state) and state.last_player_session_injected ~= session_identifier) or
             (state.cleanup_session_id ~= nil and state.cleanup_session_id ~= ""))
     end
 
     local function is_world_generation_saved_without_sidecar(state, session_identifier)
-        local home = get_world_index_home_state(state)
-        return is_pending_world_generation_state(state) and
+        local home = state_store.GetHomeState(state)
+        return state_store.IsPendingGeneration(state) and
             session_identifier ~= nil and
             session_identifier ~= "" and
             home ~= nil and
@@ -197,15 +194,10 @@ local world = require("modules/world")
     local function finish_generated_world_index(index, state, session_identifier, savedata, use_existing_world, cb)
         cb = cb or noop
 
-        if state == nil or not state.active then
-            cb(true)
-            return
-        end
-
-        local home = get_world_index_home_state(state)
+        local home = state_store.GetHomeState(state)
         if home == nil or home.session_id == nil or home.session_id == "" then
             print("[Shard World Index] Clearing sidecar without a stashed home world.")
-            clear_world_index_sidecar(index, cb)
+            state_store.ClearSidecar(index, cb)
             return
         end
 
@@ -239,7 +231,7 @@ local world = require("modules/world")
         state.generation_source_session_id = nil
         state.generation_recovery_state = nil
         transaction_api.SetPhase(state, "committed")
-        set_world_index_state(index, state)
+        state_store.SetState(index, state)
 
         local can_process_sessions = TheNet ~= nil and TheNet:GetIsServer()
         local should_inject_players = can_process_sessions and
@@ -256,18 +248,18 @@ local world = require("modules/world")
 
             if not has_cleanup_session or cleanup_session_id == home.session_id then
                 state.cleanup_session_id = nil
-                write_world_index_sidecar(index, state, cb)
+                state_store.WriteSidecar(index, state, cb)
                 return
             end
 
             if not should_cleanup_session then
                 state.cleanup_session_id = nil
-                write_world_index_sidecar(index, state, cb)
+                state_store.WriteSidecar(index, state, cb)
                 return
             end
 
             state.cleanup_session_id = nil
-            write_world_index_sidecar(index, state, function(sidecar_saved)
+            state_store.WriteSidecar(index, state, function(sidecar_saved)
                 if not sidecar_saved then
                     state.cleanup_session_id = cleanup_session_id
                     cb(false)
@@ -304,10 +296,6 @@ local world = require("modules/world")
     end
 
     local function build_world_index_client_state(state)
-        if state == nil then
-            return nil
-        end
-
         local total_chapters = type(state.level_sequence) == "table" and #state.level_sequence or nil
 
         return
@@ -382,7 +370,7 @@ local world = require("modules/world")
         state.player_positions = deepcopy_safe(target.player_positions)
         state.file_id = target_file_id
         transaction_api.SetPhase(state, "prepared")
-        set_world_index_state(index, state)
+        state_store.SetState(index, state)
 
         world.SwitchIndexToExistingWorld(index, target)
 
@@ -401,7 +389,7 @@ local world = require("modules/world")
                 state.cleanup_session_id = nil
             end
             transaction_api.SetPhase(state, "committed")
-            write_world_index_sidecar(index, state, function(saved)
+            state_store.WriteSidecar(index, state, function(saved)
                 if not saved then
                     if should_delete then
                         state.cleanup_session_id = cleanup_session_id
@@ -417,7 +405,7 @@ local world = require("modules/world")
         end
 
         local function save_target()
-            write_world_index_sidecar(index, state, function(sidecar_saved)
+            state_store.WriteSidecar(index, state, function(sidecar_saved)
                 if not sidecar_saved then
                     cb(false)
                     return
@@ -444,7 +432,7 @@ local world = require("modules/world")
         end
 
         if target.worldgenoverride ~= nil then
-            restore_worldgenoverride(index, target.worldgenoverride, function(success)
+            storage.RestoreWorldGenOverride(index, target.worldgenoverride, function(success)
                 if success then
                     save_target()
                 else
@@ -494,7 +482,7 @@ local world = require("modules/world")
             end
 
             local function check_existing_sidecar()
-                read_world_index_sidecar(index, function(existing_state, read_success)
+                state_store.ReadSidecar(index, function(existing_state, read_success)
                     if read_success == false then
                         cb(false)
                         return
@@ -537,7 +525,7 @@ local world = require("modules/world")
                         existing_state.current_session_id = nil
                         existing_state.active = false
                         existing_state.world_type = actual_world_type or existing_state.world_type
-                        write_world_index_sidecar(index, existing_state, function(saved)
+                        state_store.WriteSidecar(index, existing_state, function(saved)
                             if saved then
                                 generate_target()
                             else
@@ -548,7 +536,7 @@ local world = require("modules/world")
                 end, file_id)
             end
 
-            local home = get_world_index_home_state(state)
+            local home = state_store.GetHomeState(state)
             local target_world_type = target.world_type or world.ResolveLevelWorldType(level)
             if home.session_id ~= nil and home.session_id ~= "" then
                 world.ReadWorldSessionWorldType(index, home.session_id, function(actual_world_type, exists)
@@ -601,11 +589,11 @@ local world = require("modules/world")
         state.current_session_id = nil
         state.player_positions = nil
         transaction_api.SetPhase(state, "prepared")
-        set_world_index_state(index, state)
+        state_store.SetState(index, state)
         world.SwitchIndexToGeneratedWorld(index, level, keep_session ~= false)
 
         local worldgenoverride = world.BuildLevelWorldgenOverrideRaw(level)
-        write_worldgenoverride_str(index, worldgenoverride, function(worldgenoverride_saved)
+        storage.WriteWorldGenOverride(index, worldgenoverride, function(worldgenoverride_saved)
             if not worldgenoverride_saved then
                 cb(false)
                 return
@@ -617,7 +605,7 @@ local world = require("modules/world")
             state.current_world = deepcopy_safe(index.world)
             state.current_server = deepcopy_safe(index.server)
             state.current_enabled_mods = deepcopy_safe(index.enabled_mods)
-            write_world_index_sidecar(index, state, function(sidecar_saved)
+            state_store.WriteSidecar(index, state, function(sidecar_saved)
                 if not sidecar_saved then
                     cb(false)
                     return
@@ -631,13 +619,11 @@ local world = require("modules/world")
 
     local function commit_world_index_target(index, state, target, keep_session, cb)
         target = transition.NormalizeTarget(target)
-        if target == nil then
-            print("[Shard World Index] Missing target world.")
-            cb(false)
-            return
-        end
         local shardid = shards.GetIndexShard(index)
-        state.file_id = get_world_index_file_id_for_shard(state.file_id or transition.GetTargetFileID(target, nil, shardid), shardid)
+        state.file_id = state_store.GetFileIDForShard(
+            state.file_id or transition.GetTargetFileID(target, nil, shardid),
+            shardid
+        )
 
         if target.type == "existing" then
             commit_world_index_existing_target(index, state, target, cb)

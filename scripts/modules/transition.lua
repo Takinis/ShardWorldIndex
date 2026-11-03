@@ -1,15 +1,8 @@
+local manifest = require("modules/manifest")
 local players = require("modules/players")
 local shards = require("modules/shards")
+local state_store = require("modules/state_store")
 local world = require("modules/world")
-local normalize_world_type = world.NormalizeWorldType
-local build_generated_level_from_target = world.BuildGeneratedLevelFromTarget
-local get_level_for_shard = world.GetLevelForShard
-local resolve_level_world_type = world.ResolveLevelWorldType
-local get_worldgen_preset_id = world.GetWorldGenPresetID
-local get_index_shard = shards.GetIndexShard
-local get_file_id_for_shard = get_world_index_file_id_for_shard
-local normalize_file_id = normalize_world_index_file_id
-local get_player_positions = players.GetPlayerPositions
 
     local function normalize_world_index_target(target)
         if target == nil then
@@ -22,14 +15,14 @@ local get_player_positions = players.GetPlayerPositions
 
         local target_type = target.type or target.kind
         if target_type == "existing" or (target.session_id ~= nil and target_type ~= "generated") then
-            local out = deepcopy_safe(target) or {}
+            local out = deepcopy_safe(target)
             out.type = "existing"
             return out
         end
 
-        local out = deepcopy_safe(target) or {}
+        local out = deepcopy_safe(target)
         out.type = "generated"
-        out.world_type = normalize_world_type(out.world_type or out.location or out.dlc or out.mode)
+        out.world_type = world.NormalizeWorldType(out.world_type or out.location or out.dlc or out.mode)
 
         if out.level == nil then
             if out.current_preset ~= nil then
@@ -38,7 +31,7 @@ local get_player_positions = players.GetPlayerPositions
                 out.level = out.preset
             elseif out.id ~= nil or out.worldgen_preset ~= nil or out.settings_preset ~= nil or
                 out.overrides ~= nil or out.level_options ~= nil or out.world_type ~= nil then
-                out.level = build_generated_level_from_target(out)
+                out.level = world.BuildGeneratedLevelFromTarget(out)
             else
                 out.level = target
             end
@@ -64,10 +57,10 @@ local get_player_positions = players.GetPlayerPositions
             return_position = target.return_position,
             player_sessions = deepcopy_safe(target.player_sessions),
             player_positions = deepcopy_safe(target.player_positions) or
-                get_player_positions(target.player_sessions),
+                players.GetPlayerPositions(target.player_sessions),
             cleanup_on_return = target.cleanup_on_return == true,
-            world_type = normalize_world_type(target.world_type or target.location or target.dlc or target.mode),
-            current_preset = get_worldgen_preset_id(target.current_preset or target.preset),
+            world_type = world.NormalizeWorldType(target.world_type or target.location or target.dlc or target.mode),
+            current_preset = world.GetWorldGenPresetID(target.current_preset or target.preset),
             id = target.id,
         }
     end
@@ -77,7 +70,7 @@ local get_player_positions = players.GetPlayerPositions
         if target == nil or target.type == "existing" then
             return nil
         end
-        return get_level_for_shard(target.level or target.current_preset or target, shardid)
+        return world.GetLevelForShard(target.level or target.current_preset or target, shardid)
     end
 
     local function get_world_index_target_for_shard(target, shardid)
@@ -92,7 +85,7 @@ local get_player_positions = players.GetPlayerPositions
         end
 
         target.level = level
-        target.world_type = resolve_level_world_type(level)
+        target.world_type = world.ResolveLevelWorldType(level)
         return target
     end
 
@@ -129,13 +122,13 @@ local get_player_positions = players.GetPlayerPositions
             else
                 local level = target.level or target.current_preset
                 if type(level) == "table" then
-                    file_id = normalize_world_type(level.world_type or level.location or level.dlc or level.mode)
+                    file_id = world.NormalizeWorldType(level.world_type or level.location or level.dlc or level.mode)
                 end
                 file_id = file_id or get_world_index_target_id(target) or fallback
             end
         end
 
-        return get_file_id_for_shard(file_id, shardid)
+        return state_store.GetFileIDForShard(file_id, shardid)
     end
 
     local function get_world_index_target_from_opts(opts, state)
@@ -150,7 +143,7 @@ local get_player_positions = players.GetPlayerPositions
         if pending == nil then
             return
         end
-        pending = deepcopy_safe(pending) or pending
+        pending = deepcopy_safe(pending)
 
         state.reason = pending.reason or state.reason
         state.chapter = pending.chapter or state.chapter
@@ -169,7 +162,7 @@ local get_player_positions = players.GetPlayerPositions
         state.generation_recovery_state = deepcopy_safe(pending.generation_recovery_state) or
             state.generation_recovery_state
         if pending.file_id ~= nil then
-            state.file_id = normalize_file_id(pending.file_id)
+            state.file_id = manifest.NormalizeFileID(pending.file_id)
         end
 
         if type(pending.state) == "table" then

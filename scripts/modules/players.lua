@@ -1,16 +1,10 @@
 local shards = require("modules/shards")
-local get_index_shard = shards.GetIndexShard
-local get_runtime_shard_id = shards.GetRuntimeShardId
+local state_store = require("modules/state_store")
+local resolve_save_record_position
 
     local function save_players()
-        if AllPlayers ~= nil then
-            for _, player in ipairs(AllPlayers) do
-                if player.userid ~= nil and #player.userid > 0 then
-                    SerializeUserSession(player)
-                end
-            end
-        elseif ThePlayer ~= nil then
-            SerializeUserSession(ThePlayer)
+        for _, player in ipairs(AllPlayers) do
+            SerializeUserSession(player)
         end
     end
 
@@ -143,10 +137,6 @@ local get_runtime_shard_id = shards.GetRuntimeShardId
     end
 
     local function get_player_save_session(player)
-        if player == nil or player.userid == nil or player.userid == "" or player.prefab == nil then
-            return nil
-        end
-
         return
         {
             userid = player.userid,
@@ -262,9 +252,9 @@ local get_runtime_shard_id = shards.GetRuntimeShardId
         end
 
         local server = index:GetServerData()
-        if not TheNet:IsDedicated() and server ~= nil and not server.use_legacy_session_path then
+        if not TheNet:IsDedicated() and not server.use_legacy_session_path then
             local slot = index:GetSlot()
-            local shard = get_index_shard(index)
+            local shard = shards.GetIndexShard(index)
             local file = TheNet:GetWorldSessionFileInClusterSlot(slot, shard, session_id)
             if file ~= nil then
                 TheSim:GetPersistentStringInClusterSlot(slot, shard, file, function(load_success, str)
@@ -326,7 +316,7 @@ local get_runtime_shard_id = shards.GetRuntimeShardId
                 origin_session_id ~= destination_session_id then
                 data.data.migration =
                 {
-                    worldid = get_runtime_shard_id(shard_index),
+                    worldid = shards.GetRuntimeShardId(shard_index),
                     sessionid = origin_session_id,
                 }
             else
@@ -400,7 +390,7 @@ local get_runtime_shard_id = shards.GetRuntimeShardId
 
     local function get_pending_player_session(session_id, userid)
         local index = ShardGameIndex
-        local state = index ~= nil and index.worldindex ~= nil and get_world_index_state(index) or nil
+        local state = index ~= nil and index.worldindex ~= nil and state_store.GetState(index) or nil
         if state == nil or state.pending_player_session_id ~= session_id or
             type(state.pending_player_sessions) ~= "table" then
             return nil, nil, nil
@@ -437,7 +427,7 @@ local get_runtime_shard_id = shards.GetRuntimeShardId
             local save_state = pending_state_save_state
             pending_state_save_dirty = false
             pending_state_save_running = true
-            write_world_index_sidecar(pending_index, save_state, function(saved)
+            state_store.WriteSidecar(pending_index, save_state, function(saved)
                 pending_state_save_running = false
                 if not saved then
                     print("[Shard World Index] Failed to save pending player session state.")
@@ -451,10 +441,6 @@ local get_runtime_shard_id = shards.GetRuntimeShardId
     end
 
     local function consume_pending_player_session(index, state, userid)
-        if index == nil or state == nil or type(state.pending_player_sessions) ~= "table" then
-            return
-        end
-
         for i = #state.pending_player_sessions, 1, -1 do
             if state.pending_player_sessions[i].userid == userid then
                 table.remove(state.pending_player_sessions, i)
@@ -506,12 +492,12 @@ local get_runtime_shard_id = shards.GetRuntimeShardId
         InjectPlayerSessionsIntoExistingWorld = inject_player_sessions_into_existing_world,
         WorldSessionExists = world_session_exists,
         ReadWorldSessionRaw = read_world_session_raw,
-        GetCurrentSessionID = get_current_session_id,
     }
 
     local original_restore_snapshot = RestoreSnapshotUserSession
     local original_resume_existing = ResumeExistingUserSession
-    function api.InstallSnapshotHooks()
+    function api.InstallSnapshotHooks(resolve_position_fn)
+        resolve_save_record_position = resolve_position_fn
         function RestoreSnapshotUserSession(session_id, userid)
             local data, state, _, pending_session = get_pending_player_session(session_id, userid)
             if data == nil then
@@ -523,7 +509,7 @@ local get_runtime_shard_id = shards.GetRuntimeShardId
                 pending_session.origin_session_id ~= "" and
                 TheNet:GetUserSessionFile(pending_session.origin_session_id, userid) or nil
             if source_file == nil then
-                local home = get_world_index_home_state(state)
+                local home = state_store.GetHomeState(state)
                 source_file = home ~= nil and type(home.session_id) == "string" and
                     home.session_id ~= "" and TheNet:GetUserSessionFile(home.session_id, userid) or nil
             end
